@@ -1,9 +1,10 @@
 """
 parser.py - Windows Security Event Log Parser
 
-Supports two input formats:
+Supports three input formats:
   - EVTX: native Windows binary format via python-evtx
   - CSV:  exported from Windows Event Viewer or PowerShell Get-WinEvent
+  - JSON: JSONL format (mixed channel datasets, PowerShell, Sentinel, generic)
 
 Both formats are normalised to the same event dict schema:
 
@@ -361,13 +362,9 @@ def _parse_jsonl_record(obj: dict) -> dict | None:
     ts_str = get(*JSON_FIELD_ALIASES.get("timestamp", ["EventTime", "@timestamp"]))
     timestamp = _parse_timestamp_jsonl(ts_str)
 
-    user = (obj.get("SubjectUserName")
-            or obj.get("TargetUserName")
-            or obj.get("AccountName"))
+    user = get(*JSON_FIELD_ALIASES.get("user", ["SubjectUserName", "TargetUserName", "AccountName"]))
 
-    ip = (obj.get("IpAddress")
-          or obj.get("SourceAddress")
-          or obj.get("SourceIp"))
+    ip = get(*JSON_FIELD_ALIASES.get("ip_address", ["IpAddress", "SourceAddress", "SourceIp"]))
 
     logon_type_raw = obj.get("LogonType")
     logon_type = None
