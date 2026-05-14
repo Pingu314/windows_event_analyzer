@@ -325,7 +325,7 @@ def _parse_jsonl(path: Path) -> Iterator[dict]:
                 try:
                     obj = json.loads(line)
 
-                    channel = obj.get("Channel", "")
+                    channel = obj.get(JSON_FIELD_ALIASES["channel"][0], "") or obj.get("channel", "")
                     # Skip non-Security channel events when Channel is present
                     if channel and "Security" not in channel:
                         continue
@@ -344,13 +344,14 @@ def _parse_jsonl_record(obj: dict) -> dict | None:
 
     Handles field name variations across mixed channel datasets, PowerShell and Sentinel exports.
     """
-    def get(*keys: str) -> str | None:
+    def _get(*keys: str) -> str | None:
         for k in keys:
-            if k in obj and obj[k]:
-                return str(obj[k])
+            v = obj.get(k)
+            if v:
+                return str(v)
         return None
 
-    event_id_raw = get(*JSON_FIELD_ALIASES.get("event_id", ["EventID"]))
+    event_id_raw = _get(*JSON_FIELD_ALIASES["event_id"])
     if not event_id_raw:
         return None
     try:
@@ -359,14 +360,11 @@ def _parse_jsonl_record(obj: dict) -> dict | None:
         return None
 
     # Timestamp
-    ts_str = get(*JSON_FIELD_ALIASES.get("timestamp", ["EventTime", "@timestamp"]))
+    ts_str = _get(*JSON_FIELD_ALIASES["timestamp"]) or ""
     timestamp = _parse_timestamp_jsonl(ts_str)
-
-    user = get(*JSON_FIELD_ALIASES.get("user", ["SubjectUserName", "TargetUserName", "AccountName"]))
-
-    ip = get(*JSON_FIELD_ALIASES.get("ip_address", ["IpAddress", "SourceAddress", "SourceIp"]))
-
-    logon_type_raw = obj.get("LogonType")
+    user = _get(*JSON_FIELD_ALIASES["user"])
+    ip = _get(*JSON_FIELD_ALIASES["ip_address"])
+    logon_type_raw = _get(*JSON_FIELD_ALIASES["logon_type"])
     logon_type = None
     if logon_type_raw:
         try:
@@ -377,14 +375,14 @@ def _parse_jsonl_record(obj: dict) -> dict | None:
     return {
         "event_id":     event_id,
         "timestamp":    timestamp,
-        "source":       obj.get("SourceName", ""),
-        "computer":     (obj.get("Hostname") or obj.get("Computer") or "").lower(),
+        "source":       _get(*JSON_FIELD_ALIASES["source"]) or "",
+        "computer":     (_get(*JSON_FIELD_ALIASES["computer"]) or "").lower(),
         "user":         _clean_user(user),
         "level":        obj.get("Severity", "INFO"),
         "message":      obj.get("Message", ""),
         "logon_type":   logon_type,
         "ip_address":   _clean_ip(ip),
-        "process_name": _clean_process(obj.get("NewProcessName") or obj.get("Image")),
+        "process_name": _clean_process(_get(*JSON_FIELD_ALIASES["process_name"])),
         "task_name":    obj.get("TaskName"),
         "service_name": obj.get("ServiceName"),
         "raw":          obj,
