@@ -1,18 +1,24 @@
 """
-enricher.py - IP Threat Intelligence Enricher for Windows Event Analyzer
+enricher.py - Enrichment Pipeline for Windows Event Analyzer
 
-Enriches alerts that contain source IP addresses with geolocation,
-organisation and ASN data from ipinfo.io.
+Enriches alerts with threat intelligence, user context, computer context,
+process context, privilege context and IP reputation data.
 
-Features:
-  - In-memory cache - each IP looked up at most once per run
-  - RFC 1918 / loopback / link-local skip - no wasted API calls
-  - Optional token via IPINFO_TOKEN env var or .env file
-  - Graceful degradation - pipeline continues without enrichment if
-    no token is configured or API is unreachable
-  - Tor exit node detection via org field
+Classes:
+    IPEnricher              - ipinfo.io geolocation, ASN, Tor detection
+    AbuseIPDBEnricher       - AbuseIPDB reputation scoring
+    UserContextEnricher     - service accounts, machine accounts, watchlist
+    ComputerContextEnricher - DC/server/workstation classification, HVA
+    ProcessContextEnricher  - LOLBin detection, path anomalies
+    PrivilegeEnricher       - sensitive privilege detection from 4672/4703
+    AlertContextEnricher    - orchestrator; runs all enrichers in sequence
 
 Usage:
+    # Full pipeline
+    enricher = AlertContextEnricher()
+    alerts = enricher.enrich_alerts(alerts)
+
+    # Single enricher
     enricher = IPEnricher()
     alerts = enricher.enrich_alerts(alerts)
 """
@@ -25,26 +31,53 @@ import os
 import urllib.error
 import urllib.request
 
-from config.settings import IPINFO_BASE_URL as _IPINFO_BASE
-from config.settings import IPINFO_REQUEST_TIMEOUT as _REQUEST_TIMEOUT
+from config.settings import (
+    ABUSEIPDB_BASE_URL,
+    ABUSEIPDB_REQUEST_TIMEOUT,
+    DC_NAMING_PREFIXES,
+    HIGH_RISK_COUNTRIES,
+    HIGH_RISK_USERNAMES,
+    HIGH_VALUE_ASSETS,
+    IPINFO_BASE_URL,
+    IPINFO_REQUEST_TIMEOUT,
+    LOLBINS,
+    MACHINE_ACCOUNT_SUFFIX,
+    SENSITIVE_PRIVILEGES,
+    SERVER_NAMING_PREFIXES,
+    SERVICE_ACCOUNT_PATTERNS,
+    SYSTEM_PROCESS_PATHS,
+    WORKSTATION_NAMING_PREFIXES,
+)
 
 logger = logging.getLogger(__name__)
 
-# Load token from environment (set via .env or shell)
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
 
-_TOKEN = os.environ.get("IPINFO_TOKEN", "")
+_IPINFO_TOKEN = os.environ.get("IPINFO_TOKEN", "")
+_ABUSEIPDB_TOKEN = os.environ.get("ABUSEIPDB_TOKEN", "")
 
+
+# ---------------------------------------------------------------------------
+# IPEnricher
+# ---------------------------------------------------------------------------
 
 class IPEnricher:
-    """Enriches alert IP addresses with ipinfo.io threat intelligence"""
+    """Enriches alert IPs with ipinfo.io geolocation, ASN and Tor data.
+
+    Features:
+      - In-memory cache - each IP queried at most once per run
+      - RFC 1918 / loopback / link-local skip
+      - Graceful degradation without token
+      - Tor exit node detection via org field
+      - High-risk country flagging via settings.HIGH_RISK_COUNTRIES
+    """
 
     def __init__(self, token: str = "") -> None:
-        self._token = token or _TOKEN
+        self._token = token or _IPINFO_TOKEN
         self._cache: dict[str, dict | None] = {}
         if not self._token:
             logger.info(
@@ -53,23 +86,13 @@ class IPEnricher:
             )
 
     def enrich_alerts(self, alerts: list[dict]) -> list[dict]:
-        """Enrich all alerts that have a source IP address
-
-        Adds an 'intel' key to each alert:
-            {
-                "country":  str | None,
-                "org":      str | None,
-                "asn":      str | None,
-                "city":     str | None,
-                "is_tor":   bool,
-                "is_private": bool,
-            }
+        """Add 'intel' key to each alert with IP geolocation data.
 
         Args:
-            alerts: Alert list from detector.run_all_detections()
+            alerts: Alert list from detector.run_all_detections().
 
         Returns:
-            Same list with 'intel' key added to each alert
+            Same list with 'intel' key added to each alert.
         """
         for alert in alerts:
             ip = alert.get("ip")
@@ -77,25 +100,27 @@ class IPEnricher:
         return alerts
 
     def get_ip_info(self, ip: str) -> dict:
-        """Look up a single IP address
+        """Look up a single IP address.
 
         Args:
-            ip: IPv4 or IPv6 address string
+            ip: IPv4 or IPv6 address string.
 
         Returns:
-            Intel dict with country, org, asn, city, is_tor, is_private
+            Intel dict with country, org, asn, city, is_tor,
+            is_private, is_high_risk_country.
         """
         if not ip:
             return _no_intel()
 
         if _is_private(ip):
             return {
-                "country":    "PRIVATE",
-                "org":        "Internal Network",
-                "asn":        None,
-                "city":       None,
-                "is_tor":     False,
-                "is_private": True,
+                "country":              "PRIVATE",
+                "org":                  "Internal Network",
+                "asn":                  None,
+                "city":                 None,
+                "is_tor":               False,
+                "is_private":           True,
+                "is_high_risk_country": False,
             }
 
         if ip in self._cache:
@@ -110,28 +135,29 @@ class IPEnricher:
         return result or _no_intel()
 
     def _query(self, ip: str) -> dict | None:
-        """Query ipinfo.io for a single IP"""
-        url = f"{_IPINFO_BASE}/{ip}/json?token={self._token}"
+        url = f"{IPINFO_BASE_URL}/{ip}/json?token={self._token}"
         try:
             req = urllib.request.Request(
                 url,
                 headers={"Accept": "application/json",
                          "User-Agent": "windows-event-analyzer/1.0"},
             )
-            with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
+            with urllib.request.urlopen(req, timeout=IPINFO_REQUEST_TIMEOUT) as resp:
                 data = json.loads(resp.read().decode())
 
             org = data.get("org", "")
             asn = org.split()[0] if org and org.startswith("AS") else None
             is_tor = "tor" in org.lower() if org else False
+            country = data.get("country")
 
             return {
-                "country":    data.get("country"),
-                "org":        org or None,
-                "asn":        asn,
-                "city":       data.get("city"),
-                "is_tor":     is_tor,
-                "is_private": False,
+                "country":              country,
+                "org":                  org or None,
+                "asn":                  asn,
+                "city":                 data.get("city"),
+                "is_tor":               is_tor,
+                "is_private":           False,
+                "is_high_risk_country": country in HIGH_RISK_COUNTRIES,
             }
         except urllib.error.HTTPError as e:
             if e.code == 429:
@@ -148,23 +174,480 @@ class IPEnricher:
 
 
 # ---------------------------------------------------------------------------
+# AbuseIPDBEnricher
+# ---------------------------------------------------------------------------
+
+class AbuseIPDBEnricher:
+    """Enriches alert IPs with AbuseIPDB reputation scores.
+
+    Requires ABUSEIPDB_TOKEN in .env or environment.
+    Free tier: 1000 checks/day.
+    Adds 'abuse_intel' key to each alert.
+    """
+
+    def __init__(self, token: str = "") -> None:
+        self._token = token or _ABUSEIPDB_TOKEN
+        self._cache: dict[str, dict | None] = {}
+        if not self._token:
+            logger.info(
+                "No ABUSEIPDB_TOKEN set - AbuseIPDB enrichment disabled. "
+                "Set ABUSEIPDB_TOKEN in .env to enable."
+            )
+
+    def enrich_alerts(self, alerts: list[dict]) -> list[dict]:
+        """Add 'abuse_intel' key to each alert.
+
+        Args:
+            alerts: Alert list.
+
+        Returns:
+            Same list with 'abuse_intel' key added.
+        """
+        for alert in alerts:
+            ip = alert.get("ip")
+            alert["abuse_intel"] = (
+                self.get_abuse_score(ip) if ip else _no_abuse_intel()
+            )
+        return alerts
+
+    def get_abuse_score(self, ip: str) -> dict:
+        """Query AbuseIPDB for a single IP.
+
+        Args:
+            ip: IPv4 or IPv6 address string.
+
+        Returns:
+            Dict with abuse_score (0-100), total_reports, last_reported,
+            is_whitelisted, usage_type, isp.
+        """
+        if not ip or _is_private(ip):
+            return _no_abuse_intel()
+
+        if ip in self._cache:
+            return self._cache[ip] or _no_abuse_intel()
+
+        if not self._token:
+            self._cache[ip] = None
+            return _no_abuse_intel()
+
+        result = self._query(ip)
+        self._cache[ip] = result
+        return result or _no_abuse_intel()
+
+    def _query(self, ip: str) -> dict | None:
+        url = f"{ABUSEIPDB_BASE_URL}/check"
+        try:
+            params = f"ipAddress={ip}&maxAgeInDays=90"
+            req = urllib.request.Request(
+                f"{url}?{params}",
+                headers={
+                    "Key": self._token,
+                    "Accept": "application/json",
+                    "User-Agent": "windows-event-analyzer/1.0",
+                },
+            )
+            with urllib.request.urlopen(
+                req, timeout=ABUSEIPDB_REQUEST_TIMEOUT
+            ) as resp:
+                data = json.loads(resp.read().decode()).get("data", {})
+
+            return {
+                "abuse_score":    data.get("abuseConfidenceScore", 0),
+                "total_reports":  data.get("totalReports", 0),
+                "last_reported":  data.get("lastReportedAt"),
+                "is_whitelisted": data.get("isWhitelisted", False),
+                "usage_type":     data.get("usageType"),
+                "isp":            data.get("isp"),
+            }
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                logger.warning("AbuseIPDB rate limit hit for %s", ip)
+            else:
+                logger.debug("AbuseIPDB HTTP error for %s: %s", ip, e)
+            return None
+        except urllib.error.URLError as e:
+            logger.debug("AbuseIPDB connection error for %s: %s", ip, e)
+            return None
+        except Exception as e:
+            logger.debug("AbuseIPDB unexpected error for %s: %s", ip, e)
+            return None
+
+
+# ---------------------------------------------------------------------------
+# UserContextEnricher
+# ---------------------------------------------------------------------------
+
+class UserContextEnricher:
+    """Classifies usernames in alerts - no API required.
+
+    Detects service accounts, machine accounts, high-risk usernames
+    and custom watchlist matches using settings.py patterns.
+
+    Adds 'user_context' key to each alert.
+    """
+
+    def __init__(self, watchlist: list[str] | None = None) -> None:
+        self._watchlist = {u.lower() for u in (watchlist or [])}
+
+    def enrich_alerts(self, alerts: list[dict]) -> list[dict]:
+        """Add 'user_context' key to each alert.
+
+        Args:
+            alerts: Alert list.
+
+        Returns:
+            Same list with 'user_context' key added.
+        """
+        for alert in alerts:
+            user = alert.get("user")
+            alert["user_context"] = (
+                self.classify(user) if user else _no_user_context()
+            )
+        return alerts
+
+    def classify(self, username: str) -> dict:
+        """Classify a username.
+
+        Args:
+            username: Normalised (lowercase) username string.
+
+        Returns:
+            Dict with is_service_account, is_machine_account,
+            is_high_risk, is_watchlisted, account_type.
+        """
+        u = username.lower().strip()
+
+        is_machine = u.endswith(MACHINE_ACCOUNT_SUFFIX)
+        is_service = any(
+            u.startswith(p) or u.endswith(p.rstrip("_").rstrip("-"))
+            for p in SERVICE_ACCOUNT_PATTERNS
+        )
+        is_high_risk = u in HIGH_RISK_USERNAMES
+        is_watchlisted = u in self._watchlist
+
+        if is_machine:
+            account_type = "machine"
+        elif is_service:
+            account_type = "service"
+        elif is_high_risk:
+            account_type = "privileged"
+        else:
+            account_type = "standard"
+
+        return {
+            "is_service_account": is_service,
+            "is_machine_account": is_machine,
+            "is_high_risk":       is_high_risk,
+            "is_watchlisted":     is_watchlisted,
+            "account_type":       account_type,
+        }
+
+
+# ---------------------------------------------------------------------------
+# ComputerContextEnricher
+# ---------------------------------------------------------------------------
+
+class ComputerContextEnricher:
+    """Classifies computers in alerts by naming convention - no API required.
+
+    Uses settings.DC_NAMING_PREFIXES, SERVER_NAMING_PREFIXES,
+    WORKSTATION_NAMING_PREFIXES and HIGH_VALUE_ASSETS.
+
+    Adds 'computer_context' key to each alert.
+    """
+
+    def enrich_alerts(self, alerts: list[dict]) -> list[dict]:
+        """Add 'computer_context' key to each alert.
+
+        Args:
+            alerts: Alert list.
+
+        Returns:
+            Same list with 'computer_context' key added.
+        """
+        for alert in alerts:
+            computer = alert.get("computer")
+            alert["computer_context"] = (
+                self.classify(computer) if computer else _no_computer_context()
+            )
+        return alerts
+
+    def classify(self, computer: str) -> dict:
+        """Classify a computer name.
+
+        Args:
+            computer: Normalised (lowercase) computer name or FQDN.
+
+        Returns:
+            Dict with computer_type, is_domain_controller,
+            is_server, is_workstation, is_high_value.
+        """
+        c = computer.lower().split(".")[0]  # strip domain suffix
+
+        is_dc = any(c.startswith(p) for p in DC_NAMING_PREFIXES)
+        is_server = any(c.startswith(p) for p in SERVER_NAMING_PREFIXES)
+        is_workstation = any(c.startswith(p) for p in WORKSTATION_NAMING_PREFIXES)
+        is_hva = (
+            any(hva.lower() in c for hva in HIGH_VALUE_ASSETS)
+            if HIGH_VALUE_ASSETS else False
+        )
+
+        if is_dc:
+            computer_type = "domain_controller"
+        elif is_server:
+            computer_type = "server"
+        elif is_workstation:
+            computer_type = "workstation"
+        else:
+            computer_type = "unknown"
+
+        return {
+            "computer_type":        computer_type,
+            "is_domain_controller": is_dc,
+            "is_server":            is_server,
+            "is_workstation":       is_workstation,
+            "is_high_value":        is_hva,
+        }
+
+
+# ---------------------------------------------------------------------------
+# ProcessContextEnricher
+# ---------------------------------------------------------------------------
+
+class ProcessContextEnricher:
+    """Enriches process-related alerts with LOLBin and path anomaly detection.
+
+    Reads process_name and full path from triggering events.
+    Checks against settings.LOLBINS and settings.SYSTEM_PROCESS_PATHS.
+
+    Adds 'process_context' key to Execution and Persistence alerts.
+    """
+
+    def enrich_alerts(self, alerts: list[dict]) -> list[dict]:
+        """Add 'process_context' key to execution/persistence alerts.
+
+        Args:
+            alerts: Alert list.
+
+        Returns:
+            Same list with 'process_context' key added.
+        """
+        for alert in alerts:
+            category = alert.get("category", "")
+            if category in ("Execution", "Persistence"):
+                process_name = None
+                full_path = None
+                for event in alert.get("events", []):
+                    raw = event.get("raw", {})
+                    full_path = raw.get("NewProcessName", "").lower()
+                    process_name = event.get("process_name")
+                    if process_name:
+                        break
+                alert["process_context"] = self.classify(process_name, full_path)
+            else:
+                alert["process_context"] = None
+        return alerts
+
+    def classify(self, process_name: str | None,
+                 full_path: str | None = None) -> dict:
+        """Classify a process by name and path.
+
+        Args:
+            process_name: Basename of the process (e.g. 'cmd.exe').
+            full_path: Full path if available.
+
+        Returns:
+            Dict with is_lolbin, is_system_path, path_anomaly, process_name.
+        """
+        if not process_name:
+            return {
+                "is_lolbin":      False,
+                "is_system_path": None,
+                "path_anomaly":   False,
+                "process_name":   None,
+            }
+
+        name = process_name.lower()
+        path = (full_path or "").lower()
+
+        is_lolbin = name in LOLBINS
+        is_system = (
+            any(path.startswith(sp) for sp in SYSTEM_PROCESS_PATHS)
+            if path else None
+        )
+        # Path anomaly: LOLBin running outside system directories
+        path_anomaly = bool(is_lolbin and path and not is_system)
+
+        return {
+            "is_lolbin":      is_lolbin,
+            "is_system_path": is_system,
+            "path_anomaly":   path_anomaly,
+            "process_name":   name,
+        }
+
+
+# ---------------------------------------------------------------------------
+# PrivilegeEnricher
+# ---------------------------------------------------------------------------
+
+class PrivilegeEnricher:
+    """Parses privilege names from 4672/4703 events, flags sensitive ones.
+
+    Reads PrivilegeList from event raw data and checks against
+    settings.SENSITIVE_PRIVILEGES.
+
+    Adds 'privilege_context' key to privilege-related alerts.
+    """
+
+    def enrich_alerts(self, alerts: list[dict]) -> list[dict]:
+        """Add 'privilege_context' key to privilege-related alerts.
+
+        Args:
+            alerts: Alert list.
+
+        Returns:
+            Same list with 'privilege_context' key added.
+        """
+        for alert in alerts:
+            event_ids = {e.get("event_id") for e in alert.get("events", [])}
+            if event_ids & {4672, 4703, 4704, 4705}:
+                privs = self._extract_privileges(alert)
+                alert["privilege_context"] = self.classify(privs)
+            else:
+                alert["privilege_context"] = None
+        return alerts
+
+    def classify(self, privileges: list[str]) -> dict:
+        """Classify a list of privilege names.
+
+        Args:
+            privileges: List of Windows privilege name strings.
+
+        Returns:
+            Dict with privileges, sensitive_privileges, has_sensitive,
+            highest_risk_privilege.
+        """
+        sensitive = [p for p in privileges if p in SENSITIVE_PRIVILEGES]
+        return {
+            "privileges":             privileges,
+            "sensitive_privileges":   sensitive,
+            "has_sensitive":          bool(sensitive),
+            "highest_risk_privilege": sensitive[0] if sensitive else None,
+        }
+
+    def _extract_privileges(self, alert: dict) -> list[str]:
+        privs: list[str] = []
+        for event in alert.get("events", []):
+            raw = event.get("raw", {})
+            priv_list = raw.get("PrivilegeList", "")
+            if priv_list:
+                privs.extend(
+                    p.strip()
+                    for p in priv_list.replace("\t", "\n").splitlines()
+                    if p.strip().startswith("Se")
+                )
+        return list(dict.fromkeys(privs))
+
+
+# ---------------------------------------------------------------------------
+# AlertContextEnricher (orchestrator)
+# ---------------------------------------------------------------------------
+
+class AlertContextEnricher:
+    """Orchestrator that runs all enrichers in sequence.
+
+    Pipeline:
+        IPEnricher → AbuseIPDBEnricher → UserContextEnricher →
+        ComputerContextEnricher → ProcessContextEnricher → PrivilegeEnricher
+
+    API enrichers (IP, AbuseIPDB) degrade gracefully without tokens.
+    All other enrichers run unconditionally - no API required.
+
+    Usage:
+        enricher = AlertContextEnricher()
+        alerts = enricher.enrich_alerts(alerts)
+    """
+
+    def __init__(
+        self,
+        ip_token: str = "",
+        abuse_token: str = "",
+        user_watchlist: list[str] | None = None,
+    ) -> None:
+        self._ip = IPEnricher(token=ip_token)
+        self._abuse = AbuseIPDBEnricher(token=abuse_token)
+        self._user = UserContextEnricher(watchlist=user_watchlist)
+        self._computer = ComputerContextEnricher()
+        self._process = ProcessContextEnricher()
+        self._privilege = PrivilegeEnricher()
+
+    def enrich_alerts(self, alerts: list[dict]) -> list[dict]:
+        """Run all enrichers against the alert list.
+
+        Args:
+            alerts: Alert list from detector.run_all_detections().
+
+        Returns:
+            Same list with all enrichment keys added.
+        """
+        alerts = self._ip.enrich_alerts(alerts)
+        alerts = self._abuse.enrich_alerts(alerts)
+        alerts = self._user.enrich_alerts(alerts)
+        alerts = self._computer.enrich_alerts(alerts)
+        alerts = self._process.enrich_alerts(alerts)
+        alerts = self._privilege.enrich_alerts(alerts)
+        return alerts
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _no_intel() -> dict:
-    """Return an empty intel dict for IPs that could not be enriched"""
     return {
-        "country":    None,
-        "org":        None,
-        "asn":        None,
-        "city":       None,
-        "is_tor":     False,
-        "is_private": False,
+        "country":              None,
+        "org":                  None,
+        "asn":                  None,
+        "city":                 None,
+        "is_tor":               False,
+        "is_private":           False,
+        "is_high_risk_country": False,
+    }
+
+
+def _no_abuse_intel() -> dict:
+    return {
+        "abuse_score":    None,
+        "total_reports":  None,
+        "last_reported":  None,
+        "is_whitelisted": None,
+        "usage_type":     None,
+        "isp":            None,
+    }
+
+
+def _no_user_context() -> dict:
+    return {
+        "is_service_account": False,
+        "is_machine_account": False,
+        "is_high_risk":       False,
+        "is_watchlisted":     False,
+        "account_type":       "unknown",
+    }
+
+
+def _no_computer_context() -> dict:
+    return {
+        "computer_type":        "unknown",
+        "is_domain_controller": False,
+        "is_server":            False,
+        "is_workstation":       False,
+        "is_high_value":        False,
     }
 
 
 def _is_private(ip: str) -> bool:
-    """Return True if IP is RFC 1918, loopback or link-local"""
+    """Return True if IP is RFC 1918, loopback or link-local."""
     try:
         addr = ipaddress.ip_address(ip)
         return addr.is_private or addr.is_loopback or addr.is_link_local
