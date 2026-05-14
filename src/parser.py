@@ -26,13 +26,14 @@ Both formats are normalised to the same event dict schema:
 from __future__ import annotations
 
 import csv
+import json
 import logging
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config.settings import CSV_COLUMN_ALIASES
+from config.settings import CSV_COLUMN_ALIASES, JSON_FIELD_ALIASES
 
 try:
     import Evtx.Evtx as _evtx_lib  # noqa: N813
@@ -47,16 +48,16 @@ _EVTX_NS = "http://schemas.microsoft.com/win/2004/08/events/event"
 
 
 def parse(path: str | Path) -> list[dict]:
-    """Parse a Windows Security log file (EVTX or CSV).
+    """Parse a Windows Security log file (EVTX, CSV, JSON).
 
     Args:
-        path: Path to .evtx or .csv file.
+        path: Path to .evtx, .csv or .json file.
 
     Returns:
         List of normalised event dicts, sorted by timestamp ascending.
 
     Raises:
-        ValueError: If file extension is not .evtx or .csv.
+        ValueError: If file extension is not .evtx, .csv or .json.
         FileNotFoundError: If path does not exist.
         ImportError: If .evtx requested but python-evtx not installed.
     """
@@ -69,10 +70,12 @@ def parse(path: str | Path) -> list[dict]:
         events = list(_parse_evtx(p))
     elif suffix == ".csv":
         events = list(_parse_csv(p))
+    elif suffix == ".json":
+        events = list(_parse_jsonl(p))
     else:
-        raise ValueError(f"Unsupported file type: {suffix}. Expected .evtx or .csv")
+        raise ValueError(f"Unsupported file type: {suffix}. Expected .evtx, .csv or .json")
 
-    # Sort by timestamp — critical for sequence-based detection rules
+    # Sort by timestamp - critical for sequence-based detection rules
     events.sort(key=lambda e: e["timestamp"])
     logger.info("Parsed %d events from %s", len(events), p.name)
     return events
@@ -296,6 +299,99 @@ def _parse_csv_row(row: dict, col_map: dict[str, str]) -> dict | None:
         "raw":          dict(row),
     }
 
+# ---------------------------------------------------------------------------
+# JSON parser
+# ---------------------------------------------------------------------------
+
+def _parse_jsonl(path: Path) -> Iterator[dict]:
+    """Parse a Windows Security Event JSONL file.
+
+    Handles multiple formats:
+        - Mixed channel datasets (filtered to Security channel by Channel field)
+        - PowerShell Get-WinEvent JSON export
+        - Azure Sentinel JSON export
+        - Generic flat JSON with EventID field
+
+    Security channel filter: processes events where Channel contains 'Security',
+    or where no Channel field is present (generic/PowerShell format).
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+
+                    channel = obj.get("Channel", "")
+                    # Skip non-Security channel events when Channel is present
+                    if channel and "Security" not in channel:
+                        continue
+                    event = _parse_jsonl_record(obj)
+                    if event:
+                        yield event
+                except json.JSONDecodeError as e:
+                    logger.debug("Skipping malformed JSONL line %d: %s", line_num, e)
+    except Exception as e:
+        logger.error("Failed to read JSONL file %s: %s", path, e)
+        raise
+
+
+def _parse_jsonl_record(obj: dict) -> dict | None:
+    """Normalise a flat JSON Windows Security event to our standard schema.
+
+    Handles field name variations across mixed channel datasets, PowerShell and Sentinel exports.
+    """
+    def get(*keys: str) -> str | None:
+        for k in keys:
+            if k in obj and obj[k]:
+                return str(obj[k])
+        return None
+
+    event_id_raw = get(*JSON_FIELD_ALIASES.get("event_id", ["EventID"]))
+    if not event_id_raw:
+        return None
+    try:
+        event_id = int(event_id_raw)
+    except (ValueError, TypeError):
+        return None
+
+    # Timestamp
+    ts_str = get(*JSON_FIELD_ALIASES.get("timestamp", ["EventTime", "@timestamp"]))
+    timestamp = _parse_timestamp_jsonl(ts_str)
+
+    user = (obj.get("SubjectUserName")
+            or obj.get("TargetUserName")
+            or obj.get("AccountName"))
+
+    ip = (obj.get("IpAddress")
+          or obj.get("SourceAddress")
+          or obj.get("SourceIp"))
+
+    logon_type_raw = obj.get("LogonType")
+    logon_type = None
+    if logon_type_raw:
+        try:
+            logon_type = int(logon_type_raw)
+        except (ValueError, TypeError):
+            pass
+
+    return {
+        "event_id":     event_id,
+        "timestamp":    timestamp,
+        "source":       obj.get("SourceName", ""),
+        "computer":     (obj.get("Hostname") or obj.get("Computer") or "").lower(),
+        "user":         _clean_user(user),
+        "level":        obj.get("Severity", "INFO"),
+        "message":      obj.get("Message", ""),
+        "logon_type":   logon_type,
+        "ip_address":   _clean_ip(ip),
+        "process_name": _clean_process(obj.get("NewProcessName") or obj.get("Image")),
+        "task_name":    obj.get("TaskName"),
+        "service_name": obj.get("ServiceName"),
+        "raw":          obj,
+    }
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -340,6 +436,25 @@ def _parse_timestamp_csv(ts: str) -> datetime:
             continue
 
     logger.debug("Could not parse CSV timestamp: %s", ts)
+    return datetime.now(timezone.utc)
+
+
+def _parse_timestamp_jsonl(ts: str) -> datetime:
+    """Parse JSON event timestamp formats (ISO 8601 and datetime variants)."""
+    if not ts:
+        return datetime.now(timezone.utc)
+    # Remove trailing Z and microseconds for simpler parsing
+    ts = ts.rstrip("Z").split(".")[0].strip()
+    formats = [
+        "%Y-%m-%dT%H:%M:%S",   # 2020-08-07T14:32:25
+        "%Y-%m-%d %H:%M:%S",   # 2020-08-07 14:32:25
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(ts, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    logger.debug("Could not parse JSONL timestamp: %s", ts)
     return datetime.now(timezone.utc)
 
 
