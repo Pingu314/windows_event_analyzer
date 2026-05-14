@@ -11,9 +11,9 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from config.settings import DEFAULT_REPORT_DIR as _REPORT_DIR
 
-_REPORT_DIR = Path("reports")
+logger = logging.getLogger(__name__)
 
 _CSV_FIELDNAMES = [
     "rule_id",
