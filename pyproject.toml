@@ -21,7 +21,8 @@ classifiers = ["Development Status :: 5 - Production/Stable",
                "Programming Language :: Python :: 3.14",
                "License :: OSI Approved :: MIT License"]
 dependencies = ["python-evtx>=0.7.4",
-                "flask>=3.1.0,<4.0"]
+                "flask>=3.1.0,<4.0",
+                "python-dotenv>=1.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=9.0",

@@ -5,10 +5,15 @@ env/
 .vscode/
 __pycache__/
 .pytest_cache/
+.ruff_cache/
 output/
 !output/.gitkeep
 reports/
 !reports/.gitkeep
+data/sample_logs/*.evtx
+data/sample_logs/*.json
+data/sample_logs/*.jsonl
+windows_event_analyzer.egg-info/
 *.egg-info/
 *.egg
 dist/
