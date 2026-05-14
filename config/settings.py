@@ -5,6 +5,8 @@ All tunable constants live here. Every module imports from this file.
 No hardcoded values anywhere else.
 """
 
+from pathlib import Path
+
 # ---------------------------------------------------------------------------
 # Detection thresholds
 # ---------------------------------------------------------------------------
@@ -323,6 +325,38 @@ CSV_COLUMN_ALIASES = {
     "task_name":    ["Task Name", "TaskName", "task_name"],
     "service_name": ["Service Name", "ServiceName", "service_name"],
 }
+
+# ---------------------------------------------------------------------------
+# JSON export field mapping
+# (field name variations across dataset formats)
+# ---------------------------------------------------------------------------
+
+JSON_FIELD_ALIASES = {
+    "event_id":    ["EventID", "EventId", "event_id"],
+    "timestamp":   ["EventTime", "@timestamp", "TimeCreated", "timestamp"],
+    "source":      ["SourceName", "Provider", "source"],
+    "computer":    ["Hostname", "Computer", "ComputerName", "computer"],
+    "user":        ["SubjectUserName", "TargetUserName", "AccountName", "user"],
+    "ip_address":  ["IpAddress", "SourceAddress", "SourceIp", "ip_address"],
+    "logon_type":  ["LogonType", "logon_type"],
+    "process_name": ["NewProcessName", "Image", "ProcessName", "process_name"],
+    "channel":     ["Channel", "channel"],
+}
+
+# ---------------------------------------------------------------------------
+# External service configuration
+# ---------------------------------------------------------------------------
+
+IPINFO_BASE_URL = "https://ipinfo.io"
+IPINFO_REQUEST_TIMEOUT = 5  # seconds
+
+# ---------------------------------------------------------------------------
+# File handling
+# ---------------------------------------------------------------------------
+
+SUPPORTED_LOG_EXTENSIONS = {".evtx", ".csv", ".json"}
+DEFAULT_REPORT_DIR = Path("reports")
+DEFAULT_OUTPUT_DIR = Path("output")
 
 # ---------------------------------------------------------------------------
 # Logon type mapping
