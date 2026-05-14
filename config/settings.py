@@ -357,6 +357,11 @@ IPINFO_REQUEST_TIMEOUT = 5  # seconds
 SUPPORTED_LOG_EXTENSIONS = {".evtx", ".csv", ".json"}
 DEFAULT_REPORT_DIR = Path("reports")
 DEFAULT_OUTPUT_DIR = Path("output")
+REPORT_CSV_FIELDNAMES = [
+    "rule_id", "rule", "category", "mitre", "sigma_severity",
+    "severity", "score", "computer", "user", "ip", "count",
+    "detail", "mitre_tags",
+]
 
 # ---------------------------------------------------------------------------
 # Logon type mapping
@@ -375,3 +380,55 @@ LOGON_TYPES = {
     12: "CachedRemoteInteractive",
     13: "CachedUnlock",
 }
+
+# ---------------------------------------------------------------------------
+# Enricher configuration
+# ---------------------------------------------------------------------------
+
+SERVICE_ACCOUNT_PATTERNS = ["svc_", "svc-", "_svc", "sa_", "sa-", "adm_", "adm-"]
+MACHINE_ACCOUNT_SUFFIX = "$"
+HIGH_RISK_USERNAMES = ["administrator", "admin", "root", "guest", "krbtgt"]
+DC_NAMING_PREFIXES = ["dc", "dc-", "dc_", "domaincontroller"]
+SERVER_NAMING_PREFIXES = ["srv", "srv-", "server", "fs", "app", "db", "sql"]
+WORKSTATION_NAMING_PREFIXES = ["ws", "ws-", "pc", "desktop", "laptop", "wks"]
+HIGH_VALUE_ASSETS: list[str] = []
+HIGH_RISK_COUNTRIES = ["CN", "RU", "KP", "IR", "NG", "UA", "RO", "BR"]
+ABUSEIPDB_BASE_URL = "https://api.abuseipdb.com/api/v2"
+ABUSEIPDB_REQUEST_TIMEOUT = 5
+
+# ---------------------------------------------------------------------------
+# Process enrichment
+# ---------------------------------------------------------------------------
+
+LOLBINS = [
+    "certutil.exe", "mshta.exe", "wscript.exe", "cscript.exe",
+    "regsvr32.exe", "rundll32.exe", "msiexec.exe", "installutil.exe",
+    "regasm.exe", "regsvcs.exe", "msbuild.exe", "cmstp.exe",
+    "wmic.exe", "schtasks.exe", "odbcconf.exe", "hh.exe",
+    "esentutl.exe", "expand.exe", "findstr.exe", "makecab.exe",
+    "mavinject.exe", "msdeploy.exe", "msdt.exe", "nltest.exe",
+    "pcalua.exe", "replace.exe", "rpcping.exe",
+]
+
+SYSTEM_PROCESS_PATHS = [
+    "c:\\windows\\system32\\",
+    "c:\\windows\\syswow64\\",
+    "c:\\windows\\",
+]
+
+# ---------------------------------------------------------------------------
+# Privilege enrichment
+# ---------------------------------------------------------------------------
+
+SENSITIVE_PRIVILEGES = [
+    "SeDebugPrivilege",
+    "SeImpersonatePrivilege",
+    "SeTcbPrivilege",
+    "SeAssignPrimaryTokenPrivilege",
+    "SeLoadDriverPrivilege",
+    "SeBackupPrivilege",
+    "SeRestorePrivilege",
+    "SeTakeOwnershipPrivilege",
+    "SeCreateTokenPrivilege",
+    "SeSecurityPrivilege",
+]

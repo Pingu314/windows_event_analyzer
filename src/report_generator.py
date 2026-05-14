@@ -12,24 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import DEFAULT_REPORT_DIR as _REPORT_DIR
+from config.settings import HIGH_RISK_COUNTRIES as _HIGH_RISK_COUNTRIES
+from config.settings import REPORT_CSV_FIELDNAMES as _CSV_FIELDNAMES
 
 logger = logging.getLogger(__name__)
-
-_CSV_FIELDNAMES = [
-    "rule_id",
-    "rule",
-    "category",
-    "mitre",
-    "sigma_severity",
-    "severity",
-    "score",
-    "computer",
-    "user",
-    "ip",
-    "count",
-    "detail",
-    "mitre_tags",
-]
 
 
 class ReportGenerator:
@@ -42,11 +28,13 @@ class ReportGenerator:
     def _ensure_dir(self) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
 
-    def export(self, alerts: list[dict]) -> str:
+    def export(self, alerts: list[dict], source_path: str = "", min_severity: str = "") -> str:
         """Write alerts to a timestamped JSON file.
 
         Args:
             alerts: Enriched alert dicts (with 'risk' and 'mitre_tags' keys).
+            source_path: Path to the source of the alerts.
+            min_severity: Minimum severity level to include in the report.
 
         Returns:
             Path to the written file as a string.
@@ -56,10 +44,24 @@ class ReportGenerator:
 
         # Serialise - strip non-serialisable 'events' list to avoid
         # dumping full event payloads into the report by default
+        if min_severity:
+            _order = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+            alerts = [a for a in alerts
+                      if _order.get(a.get("risk", {}).get("severity", "LOW"), 0)
+                      >= _order.get(min_severity, 0)]
         serialisable = [_prepare_for_json(a) for a in alerts]
-
+        output = {
+            "meta": {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "source": source_path,
+                "total_alerts": len(alerts),
+                "tool": "windows-event-analyzer",
+                "version": "1.0.0",
+            },
+            "alerts": serialisable,
+        }
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(serialisable, f, indent=2, default=str)
+            json.dump(output, f, indent=2, default=str)
 
         logger.info("JSON report written: %s (%d alerts)", path, len(alerts))
         return str(path)
@@ -136,6 +138,11 @@ class ReportGenerator:
                 tags = alert.get("mitre_tags", [])
                 if tags:
                     print(f"             MITRE: {', '.join(tags[:2])}")
+                intel = alert.get("intel", {})
+                if intel.get("is_tor"):
+                    print(f"             ⚠  TOR EXIT NODE: {intel.get('org', '')}")
+                elif intel.get("country") in _HIGH_RISK_COUNTRIES:
+                    print(f"             ⚠  HIGH-RISK COUNTRY: {intel.get('country')}")
                 print()
 
 
