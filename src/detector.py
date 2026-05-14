@@ -39,6 +39,7 @@ present. A caveat is logged if none are found.
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from datetime import timedelta
 from pathlib import Path
@@ -394,6 +395,7 @@ def run_all_detections(
     alerts += _detect_rdp_reconnect_anomaly(by_id)
     alerts += _detect_account_lockout(by_id)
     alerts += _detect_single_event_rules(by_id)
+    alerts += _detect_multi_id_rules(by_id)
     alerts += _detect_group_changes(by_id)
     alerts += _detect_privilege_escalation_sequence(by_id)
     alerts += _detect_lateral_movement_sequence(by_id, **kwargs)
@@ -403,6 +405,7 @@ def run_all_detections(
     alerts += _detect_short_lived_process(by_id)
     alerts += _detect_registry_process_sequence(by_id)
     alerts += _detect_firewall_change_burst(by_id)
+    alerts += _detect_scheduled_task(by_id)
 
     return _deduplicate(alerts)
 
@@ -493,6 +496,29 @@ def _detect_single_event_rules(by_id: dict[int, list[dict]]) -> list[dict]:
             ))
     return alerts
 
+
+def _detect_multi_id_rules(by_id: dict) -> list[dict]:
+    """Handle rules that match on multiple event IDs (OR logic)."""
+    alerts = []
+    multi_rules = [
+        ([4723, 4724], "acct-009"),
+        ([4697, 7045], "persist-005"),
+        ([5027, 5028], "evasion-012"),
+    ]
+    rule_map = {r["rule_id"]: r for r in RULES}
+    for event_ids, rule_id in multi_rules:
+        rule = rule_map[rule_id]
+        for eid in event_ids:
+            for event in by_id.get(eid, []):
+                alerts.append(_make_alert(
+                    rule=rule, events=[event],
+                    computer=event["computer"],
+                    user=event["user"],
+                    ip=event.get("ip_address"),
+                    count=1,
+                    detail=_event_detail(event),
+                ))
+    return alerts
 
 # ---------------------------------------------------------------------------
 # Multi-event / threshold rules
@@ -1115,7 +1141,6 @@ def _extract_field(event: dict, field: str) -> str | None:
 
 def _is_ip(value: str) -> bool:
     """Basic check if value looks like an IP address."""
-    import re
     return bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}$", value or ""))
 
 
