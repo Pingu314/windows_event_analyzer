@@ -22,6 +22,7 @@ from pathlib import Path
 from config.settings import (
     BRUTE_FORCE_THRESHOLD,
     BRUTE_FORCE_WINDOW_MINUTES,
+    DEFAULT_OUTPUT_DIR,
     LATERAL_THRESHOLD,
     LATERAL_WINDOW_MINUTES,
     SPRAY_THRESHOLD,
@@ -40,8 +41,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-DEFAULT_OUTPUT_DIR = Path("output")
 
 
 def run_pipeline(
