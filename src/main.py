@@ -56,14 +56,14 @@ def run_pipeline(
     """Run the full detection pipeline on a single log file.
 
     Args:
-        log_path: Path to .evtx or .csv file.
+        log_path: Path to .evtx, .csv or .json file.
         brute_force_threshold: Override default brute force threshold.
         brute_force_window: Override default brute force window (minutes).
         spray_threshold: Override default password spray threshold.
         spray_window: Override default spray window (minutes).
         lateral_threshold: Override default lateral movement threshold.
         lateral_window: Override default lateral movement window (minutes).
-        enricher: Optional pre-instantiated IPEnricher (reused across batch).
+        enricher: Optional pre-instantiated AlertContextEnricher (reused across batch).
 
     Returns:
         List of enriched, scored, MITRE-tagged alert dicts.
@@ -106,8 +106,8 @@ def run_pipeline_multi(
     All events are merged before detection - cross-file correlation applies.
 
     Args:
-        log_paths: List of .evtx or .csv paths.
-        enricher: Optional pre-instantiated IPEnricher.
+        log_paths: List of .evtx, .csv or .json paths.
+        enricher: Optional pre-instantiated AlertContextEnricher.
         (other args same as run_pipeline)
 
     Returns:
@@ -207,7 +207,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=(
             "Windows Event Analyzer - detect attacks in Windows Security "
-            "event logs (.evtx or .csv)."
+            "event logs (.evtx, .csv or .json)."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         epilog="""
@@ -225,17 +225,17 @@ Examples:
     p.add_argument(
         "paths",
         nargs="*",
-        help="Files (.evtx/.csv) or directories to analyze",
+        help="Files (.evtx/.csv/.json) or directories to analyze",
     )
 
     explicit = p.add_argument_group("explicit input flags")
     explicit.add_argument(
         "--logs", default=None,
-        help="Path to a single .evtx or .csv file",
+        help="Path to a single .evtx, .csv or .json file",
     )
     explicit.add_argument(
         "--logs-dir", default=None,
-        help="Directory — all .evtx/.csv files will be processed",
+        help="Directory - all .evtx/.csv/.json files will be processed",
     )
 
     p.add_argument(
