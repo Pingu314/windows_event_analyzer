@@ -5,7 +5,18 @@ All tunable constants live here. Every module imports from this file.
 No hardcoded values anywhere else.
 """
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Application metadata
+# ---------------------------------------------------------------------------
+
+try:
+    APP_VERSION = _pkg_version("windows-event-analyzer")
+except PackageNotFoundError:
+    APP_VERSION = "dev"
 
 # ---------------------------------------------------------------------------
 # Detection thresholds
