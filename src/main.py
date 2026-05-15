@@ -30,7 +30,7 @@ from config.settings import (
 )
 from config.settings import SUPPORTED_LOG_EXTENSIONS as SUPPORTED_EXTENSIONS
 from src.detector import run_all_detections
-from src.enricher import IPEnricher
+from src.enricher import AlertContextEnricher
 from src.mitre_mapper import map_many
 from src.parser import parse, parse_many
 from src.report_generator import ReportGenerator
@@ -51,7 +51,7 @@ def run_pipeline(
     spray_window: int | None = None,
     lateral_threshold: int | None = None,
     lateral_window: int | None = None,
-    enricher: IPEnricher | None = None,
+    enricher: AlertContextEnricher | None = None,
 ) -> list[dict]:
     """Run the full detection pipeline on a single log file.
 
@@ -99,7 +99,7 @@ def run_pipeline_multi(
     spray_window: int | None = None,
     lateral_threshold: int | None = None,
     lateral_window: int | None = None,
-    enricher: IPEnricher | None = None,
+    enricher: AlertContextEnricher | None = None,
 ) -> list[dict]:
     """Run the pipeline across multiple log files with merged event stream.
 
@@ -290,7 +290,7 @@ def main() -> None:
         "lateral_window":        args.lateral_window,
     }
 
-    enricher = IPEnricher()
+    enricher = AlertContextEnricher()
 
     if len(all_files) == 1:
         alerts = run_pipeline(
