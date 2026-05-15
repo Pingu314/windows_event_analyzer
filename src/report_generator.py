@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from config.settings import APP_VERSION as _APP_VERSION
 from config.settings import DEFAULT_REPORT_DIR as _REPORT_DIR
 from config.settings import HIGH_RISK_COUNTRIES as _HIGH_RISK_COUNTRIES
 from config.settings import REPORT_CSV_FIELDNAMES as _CSV_FIELDNAMES
@@ -56,7 +57,7 @@ class ReportGenerator:
                 "source": source_path,
                 "total_alerts": len(alerts),
                 "tool": "windows-event-analyzer",
-                "version": "1.0.0",
+                "version": _APP_VERSION,
             },
             "alerts": serialisable,
         }

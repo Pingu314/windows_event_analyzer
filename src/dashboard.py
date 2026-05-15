@@ -32,7 +32,7 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, request
 
-from config.settings import SUPPORTED_LOG_EXTENSIONS
+from config.settings import APP_VERSION, SUPPORTED_LOG_EXTENSIONS
 from src.enricher import AlertContextEnricher
 from src.main import run_pipeline, run_pipeline_multi
 
@@ -108,7 +108,7 @@ def home() -> Response:
     """Return welcome message, endpoint listing and tool version."""
     return jsonify({
         "tool":    "windows-event-analyzer",
-        "version": "1.0.0",
+        "version": APP_VERSION,
         "message": "Dashboard running. See /alerts for sample data.",
         "endpoints": {
             "GET  /":                    "This page",
@@ -211,22 +211,6 @@ def alerts_summary() -> Response:
     })
 
 
-@app.route("/alerts/<string:rule_id>")
-def alerts_by_rule(rule_id: str) -> Response:
-    """Return all alerts matching a specific rule ID.
-
-    Args:
-        rule_id: Rule ID string e.g. 'brute-001', 'evasion-001'.
-    """
-    data = _get_cached_alerts()
-    matched = [a for a in data if a.get("rule_id") == rule_id]
-    return jsonify({
-        "rule_id":      rule_id,
-        "total_alerts": len(matched),
-        "alerts":       _serialise(matched),
-    })
-
-
 @app.route("/alerts/severity/<string:level>")
 def alerts_by_severity(level: str) -> Response:
     """Return alerts filtered by severity level.
@@ -248,6 +232,22 @@ def alerts_by_severity(level: str) -> Response:
     ]
     return jsonify({
         "severity":     level,
+        "total_alerts": len(matched),
+        "alerts":       _serialise(matched),
+    })
+
+
+@app.route("/alerts/<string:rule_id>")
+def alerts_by_rule(rule_id: str) -> Response:
+    """Return all alerts matching a specific rule ID.
+
+    Args:
+        rule_id: Rule ID string e.g. 'brute-001', 'evasion-001'.
+    """
+    data = _get_cached_alerts()
+    matched = [a for a in data if a.get("rule_id") == rule_id]
+    return jsonify({
+        "rule_id":      rule_id,
         "total_alerts": len(matched),
         "alerts":       _serialise(matched),
     })
