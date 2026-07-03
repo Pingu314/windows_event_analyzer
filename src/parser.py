@@ -4,7 +4,7 @@ parser.py - Windows Security Event Log Parser
 Supports three input formats:
   - EVTX: native Windows binary format via python-evtx
   - CSV:  exported from Windows Event Viewer or PowerShell Get-WinEvent
-  - JSON: JSONL format (mixed channel datasets, PowerShell, Sentinel, generic)
+  - JSON: JSONL format (Security, Sysmon, Windows Defender, System channels)
 
 Both formats are normalised to the same event dict schema:
 
@@ -34,7 +34,7 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config.settings import CSV_COLUMN_ALIASES, JSON_FIELD_ALIASES
+from config.settings import CSV_COLUMN_ALIASES, JSON_FIELD_ALIASES, SUPPORTED_CHANNELS
 
 try:
     import Evtx.Evtx as _evtx_lib  # noqa: N813
@@ -59,6 +59,9 @@ def parse(path: str | Path) -> list[dict]:
 
     Raises:
         ValueError: If file extension is not .evtx, .csv or .json.
+            Note:
+                JSONL files are filtered to SUPPORTED_CHANNELS (see settings).
+                Sysmon and Windows Defender events are accepted when present.
         FileNotFoundError: If path does not exist.
         ImportError: If .evtx requested but python-evtx not installed.
     """
@@ -326,8 +329,8 @@ def _parse_jsonl(path: Path) -> Iterator[dict]:
                     obj = json.loads(line)
 
                     channel = obj.get(JSON_FIELD_ALIASES["channel"][0], "") or obj.get("channel", "")
-                    # Skip non-Security channel events when Channel is present
-                    if channel and "Security" not in channel:
+                    # Accept events from supported channels; skip all others
+                    if channel and not any(ch in channel for ch in SUPPORTED_CHANNELS):
                         continue
                     event = _parse_jsonl_record(obj)
                     if event:

@@ -1,7 +1,7 @@
 """
 detector.py - Windows Security Event Detector
 
-Implements 77 SIGMA-style detection rules across 8 categories:
+Implements 94 SIGMA-style detection rules across 8 categories:
   - Authentication & Logon
   - Account Management
   - Privilege & Escalation
@@ -57,11 +57,16 @@ from config.settings import (
     KERBEROS_WINDOW_MINUTES,
     LATERAL_THRESHOLD,
     LATERAL_WINDOW_MINUTES,
+    MPSSVC_SUBCATEGORY_GUID,
     PRIVILEGED_GROUPS,
     RDP_RECONNECT_THRESHOLD,
     RDP_RECONNECT_WINDOW_MINUTES,
+    REQUIRES_OBJECT_ACCESS_AUDITING,
     REQUIRES_POWERSHELL_LOGGING,
     REQUIRES_PROCESS_AUDITING,
+    SENSITIVE_FILE_PATHS,
+    SENSITIVE_REGISTRY_PATHS,
+    SERVICE_ACCOUNT_PATTERNS,
     SHORT_PROCESS_SECONDS,
     SPRAY_THRESHOLD,
     SPRAY_WINDOW_MINUTES,
@@ -103,8 +108,14 @@ RULES: list[dict] = [
     {"rule_id": "logon-006", "rule": "RDP Session Disconnected",
      "category": "Authentication", "mitre": "T1021.001",
      "sigma_severity": "low", "event_ids": [4779]},
+    {"rule_id": "logon-007", "rule": "Service Account Interactive Logon",
+     "category": "Authentication", "mitre": "T1078.002",
+     "sigma_severity": "high", "event_ids": [4624]},
     {"rule_id": "lockout-001", "rule": "Account Lockout",
      "category": "Authentication", "mitre": "T1110.001",
+     "sigma_severity": "high", "event_ids": [4740]},
+    {"rule_id": "lockout-002", "rule": "Mass Account Lockout",
+     "category": "Authentication", "mitre": "T1110.003",
      "sigma_severity": "high", "event_ids": [4740]},
     {"rule_id": "replay-001", "rule": "Replay Attack Detected",
      "category": "Authentication", "mitre": "T1550",
@@ -168,6 +179,9 @@ RULES: list[dict] = [
     {"rule_id": "recon-002", "rule": "Security Group Membership Enumerated",
      "category": "Account Management", "mitre": "T1069.001",
      "sigma_severity": "medium", "event_ids": [4799]},
+    {"rule_id": "recon-003", "rule": "Account Enumeration via Failed Logons",
+     "category": "Account Management", "mitre": "T1087.002",
+     "sigma_severity": "medium", "event_ids": [4625]},
 
     # Privilege & Escalation
     {"rule_id": "priv-001", "rule": "Special Privileges Assigned at Logon",
@@ -223,6 +237,15 @@ RULES: list[dict] = [
     {"rule_id": "persist-010", "rule": "Certificate Request Approved",
      "category": "Persistence", "mitre": "T1553.004",
      "sigma_severity": "high", "event_ids": [4887]},
+    {"rule_id": "persist-011", "rule": "Registry Autorun Key Modified",
+     "category": "Persistence", "mitre": "T1547.001",
+     "sigma_severity": "high", "event_ids": [4657]},
+    {"rule_id": "persist-012", "rule": "WMI Event Subscription Created",
+     "category": "Persistence", "mitre": "T1546.003",
+     "sigma_severity": "high", "event_ids": [5861]},
+    {"rule_id": "persist-013", "rule": "Security Support Provider Loaded",
+     "category": "Persistence", "mitre": "T1547.005",
+     "sigma_severity": "high", "event_ids": [4610]},
 
     # Lateral Movement
     {"rule_id": "lateral-001", "rule": "Lateral Movement Network Logon Sequence",
@@ -243,6 +266,18 @@ RULES: list[dict] = [
     {"rule_id": "lateral-006", "rule": "SMB Share Enumeration",
      "category": "Lateral Movement", "mitre": "T1135",
      "sigma_severity": "medium", "event_ids": [5145]},
+    {"rule_id": "lateral-007", "rule": "Explicit Credential Use Followed by Network Logon",
+     "category": "Lateral Movement", "mitre": "T1550.002",
+     "sigma_severity": "high", "event_ids": [4648, 4624]},
+    {"rule_id": "lateral-008", "rule": "Kerberoasting - RC4 Encryption Downgrade",
+     "category": "Lateral Movement", "mitre": "T1558.003",
+     "sigma_severity": "high", "event_ids": [4769]},
+    {"rule_id": "lateral-009", "rule": "New Credentials Logon (runas /netonly)",
+     "category": "Lateral Movement", "mitre": "T1550.002",
+     "sigma_severity": "medium", "event_ids": [4624]},
+    {"rule_id": "lateral-010", "rule": "NTLM Relay Indicator",
+     "category": "Lateral Movement", "mitre": "T1557.001",
+     "sigma_severity": "high", "event_ids": [4624]},
 
     # Process & Execution
     {"rule_id": "exec-001", "rule": "Suspicious Process Parent-Child",
@@ -263,6 +298,9 @@ RULES: list[dict] = [
     {"rule_id": "exec-006", "rule": "Known Malicious Process Name",
      "category": "Execution", "mitre": "T1059",
      "sigma_severity": "high", "event_ids": [4688]},
+    {"rule_id": "exec-007", "rule": "Sensitive File Access by Process",
+     "category": "Execution", "mitre": "T1003.002",
+     "sigma_severity": "critical", "event_ids": [4663]},
 
     # Defense Evasion
     {"rule_id": "evasion-001", "rule": "Audit Log Cleared",
@@ -319,6 +357,12 @@ RULES: list[dict] = [
     {"rule_id": "evasion-018", "rule": "Password Policy API Called",
      "category": "Defense Evasion", "mitre": "T1110.003",
      "sigma_severity": "medium", "event_ids": [4793]},
+    {"rule_id": "evasion-019", "rule": "Audit Policy Changed Then Log Cleared",
+     "category": "Defense Evasion", "mitre": "T1562.002",
+     "sigma_severity": "critical", "event_ids": [4719, 1102]},
+    {"rule_id": "evasion-020", "rule": "Windows Defender Disabled via Audit Policy",
+     "category": "Defense Evasion", "mitre": "T1562.001",
+     "sigma_severity": "critical", "event_ids": [4719]},
 
     # Active Directory (DC-only)
     {"rule_id": "ad-001", "rule": "Active Directory Object Modified",
@@ -406,6 +450,19 @@ def run_all_detections(
     alerts += _detect_registry_process_sequence(by_id)
     alerts += _detect_firewall_change_burst(by_id)
     alerts += _detect_scheduled_task(by_id)
+    alerts += _detect_service_account_interactive(by_id)
+    alerts += _detect_mass_lockout(by_id)
+    alerts += _detect_account_enumeration(by_id)
+    alerts += _detect_registry_autorun(by_id)
+    alerts += _detect_suspicious_service_install(by_id)
+    alerts += _detect_sensitive_file_access(by_id)
+    alerts += _detect_sensitive_permission_change(by_id)
+    alerts += _detect_kerberoasting_rc4(by_id)
+    alerts += _detect_runas_netonly(by_id)
+    alerts += _detect_lateral_explicit_network(by_id)
+    alerts += _detect_evasion_sequence(by_id)
+    alerts += _detect_defender_disabled(by_id)
+    alerts += _detect_ntlm_relay(by_id)
 
     return _deduplicate(alerts)
 
@@ -444,6 +501,8 @@ _SINGLE_EVENT_RULE_MAP: dict[int, str] = {
     6416:  "persist-008",
     4886:  "persist-009",
     4887:  "persist-010",
+    5861:  "persist-012",   # WMI subscription
+    4610:  "persist-013",   # SSP loaded
     4771:  "lateral-002",
     4776:  "lateral-004",
     5140:  "lateral-005",
@@ -464,7 +523,6 @@ _SINGLE_EVENT_RULE_MAP: dict[int, str] = {
     6006:  "evasion-014",
     6008:  "evasion-015",
     4826:  "evasion-016",
-    4670:  "evasion-017",
     4793:  "evasion-018",
     5136:  "ad-001",
     5137:  "ad-002",
@@ -519,6 +577,7 @@ def _detect_multi_id_rules(by_id: dict) -> list[dict]:
                     detail=_event_detail(event),
                 ))
     return alerts
+
 
 # ---------------------------------------------------------------------------
 # Multi-event / threshold rules
@@ -1033,6 +1092,352 @@ def _detect_scheduled_task(by_id: dict) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+
+def _detect_service_account_interactive(by_id: dict) -> list[dict]:
+    """logon-007: service account logging on interactively (type 2 or 10)."""
+    rule = _rule("logon-007")
+    alerts = []
+    for event in by_id.get(4624, []):
+        if event.get("logon_type") not in (2, 10):
+            continue
+        user = (event.get("user") or "").lower()
+        if not user:
+            continue
+        if any(user.startswith(p) or user.endswith(p.rstrip("_").rstrip("-"))
+               for p in SERVICE_ACCOUNT_PATTERNS):
+            alerts.append(_make_alert(
+                rule=rule,
+                events=[event],
+                computer=event["computer"],
+                user=event["user"],
+                ip=event.get("ip_address"),
+                count=1,
+                detail=f"Service account interactive logon "
+                       f"(type {event.get('logon_type')}): {event['user']}",
+            ))
+    return alerts
+
+
+def _detect_mass_lockout(by_id: dict) -> list[dict]:
+    """lockout-002: multiple distinct accounts locked out within window."""
+    rule = _rule("lockout-002")
+    alerts = []
+    events_4740 = sorted(by_id.get(4740, []), key=lambda e: e["timestamp"])
+    if len(events_4740) < 3:
+        return alerts
+    window = timedelta(minutes=SPRAY_WINDOW_MINUTES)
+    clusters = _sliding_window_clusters(events_4740, window, 3)
+    for cluster in clusters:
+        distinct = {e.get("user") for e in cluster if e.get("user")}
+        if len(distinct) >= 3:
+            alerts.append(_make_alert(
+                rule=rule,
+                events=cluster,
+                computer=cluster[0]["computer"],
+                user=None,
+                ip=None,
+                count=len(cluster),
+                detail=f"Mass lockout: {len(distinct)} accounts locked "
+                       f"in {SPRAY_WINDOW_MINUTES} min: "
+                       f"{', '.join(sorted(distinct)[:5])}",
+            ))
+    return alerts
+
+
+def _detect_account_enumeration(by_id: dict) -> list[dict]:
+    """recon-003: 4625 failures where SubStatus=0xC0000064 (account does not exist).
+
+    Distinct from brute force - attacker is probing for valid usernames,
+    not hammering a known account. Volume threshold: 5+ distinct non-existent
+    accounts from one source within the spray window.
+    """
+    rule = _rule("recon-003")
+    alerts = []
+    window = timedelta(minutes=SPRAY_WINDOW_MINUTES)
+
+    by_source: dict[str, list[dict]] = defaultdict(list)
+    for event in by_id.get(4625, []):
+        substatus = event.get("raw", {}).get("SubStatus", "")
+        if substatus in ("0xC0000064", "%%2305"):   # account does not exist
+            key = event.get("ip_address") or event.get("user") or "unknown"
+            by_source[key].append(event)
+
+    for source, evts in by_source.items():
+        evts_sorted = sorted(evts, key=lambda e: e["timestamp"])
+        clusters = _sliding_window_clusters(evts_sorted, window, 5)
+        for cluster in clusters:
+            distinct = {e.get("user") for e in cluster if e.get("user")}
+            if len(distinct) >= 5:
+                alerts.append(_make_alert(
+                    rule=rule,
+                    events=cluster,
+                    computer=cluster[0]["computer"],
+                    user=None,
+                    ip=source if _is_ip(source) else None,
+                    count=len(cluster),
+                    detail=f"Account enumeration from {source}: "
+                           f"{len(distinct)} non-existent accounts probed: "
+                           f"{', '.join(sorted(distinct)[:5])}",
+                ))
+    return alerts
+
+
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
+
+def _detect_registry_autorun(by_id: dict) -> list[dict]:
+    """persist-011: 4657 modifying Run/RunOnce autostart registry keys."""
+    rule = _rule("persist-011")
+    alerts = []
+
+    for event in by_id.get(4657, []):
+        obj_name = event.get("raw", {}).get("ObjectName", "").lower()
+        if any(key in obj_name for key in SENSITIVE_REGISTRY_PATHS):
+            alerts.append(_make_alert(
+                rule=rule,
+                events=[event],
+                computer=event["computer"],
+                user=event["user"],
+                ip=None,
+                count=1,
+                detail=f"Autorun registry key modified: {obj_name[-80:]}",
+            ))
+    return alerts
+
+
+def _detect_suspicious_service_install(by_id: dict) -> list[dict]:
+    """persist-005 variant: service installed from suspicious path (temp/appdata/users)."""
+    rule = _rule("persist-005")
+    alerts = []
+    suspicious_paths = ["\\temp\\", "\\appdata\\", "\\users\\", "\\programdata\\",
+                        "\\downloads\\", "\\desktop\\"]
+    for eid in (4697, 7045):
+        for event in by_id.get(eid, []):
+            image_path = event.get("raw", {}).get("ImagePath", "").lower()
+            if image_path and any(p in image_path for p in suspicious_paths):
+                alerts.append(_make_alert(
+                    rule=rule,
+                    events=[event],
+                    computer=event["computer"],
+                    user=event["user"],
+                    ip=None,
+                    count=1,
+                    detail=f"Service installed from suspicious path: {image_path[:100]}",
+                ))
+    return alerts
+
+
+# ---------------------------------------------------------------------------
+# Lateral movement
+# ---------------------------------------------------------------------------
+
+def _detect_kerberoasting_rc4(by_id: dict) -> list[dict]:
+    """lateral-008: 4769 with RC4/DES encryption type = Kerberoasting."""
+    rule = _rule("lateral-008")
+    alerts = []
+    for event in by_id.get(4769, []):
+        etype = event.get("raw", {}).get("TicketEncryptionType", "")
+        if etype in ("0x17", "0x18", "23", "24"):  # RC4 / DES
+            alerts.append(_make_alert(
+                rule=rule,
+                events=[event],
+                computer=event["computer"],
+                user=event["user"],
+                ip=event.get("ip_address"),
+                count=1,
+                detail=f"Kerberos service ticket with RC4 encryption "
+                       f"(etype={etype}) — Kerberoasting indicator",
+            ))
+    return alerts
+
+
+def _detect_runas_netonly(by_id: dict) -> list[dict]:
+    """lateral-009: 4624 logon type 9 (NewCredentials) = runas /netonly."""
+    rule = _rule("lateral-009")
+    alerts = []
+    for event in by_id.get(4624, []):
+        if event.get("logon_type") == 9:
+            alerts.append(_make_alert(
+                rule=rule,
+                events=[event],
+                computer=event["computer"],
+                user=event["user"],
+                ip=event.get("ip_address"),
+                count=1,
+                detail=f"NewCredentials logon (runas /netonly) "
+                       f"by {event.get('user', 'unknown')}",
+            ))
+    return alerts
+
+
+def _detect_lateral_explicit_network(by_id: dict) -> list[dict]:
+    """lateral-007: 4648 (explicit creds) followed by 4624 type 3 same user within 60s."""
+    rule = _rule("lateral-007")
+    alerts = []
+    window = timedelta(seconds=60)
+
+    explicit = sorted(by_id.get(4648, []), key=lambda e: e["timestamp"])
+    network = sorted(
+        [e for e in by_id.get(4624, []) if e.get("logon_type") == 3],
+        key=lambda e: e["timestamp"],
+    )
+
+    for exp in explicit:
+        user = exp.get("user")
+        if not user:
+            continue
+        ts = exp["timestamp"]
+        matching = [
+            n for n in network
+            if n.get("user") == user
+            and ts <= n["timestamp"] <= ts + window
+        ]
+        if matching:
+            alerts.append(_make_alert(
+                rule=rule,
+                events=[exp, matching[0]],
+                computer=exp["computer"],
+                user=user,
+                ip=exp.get("ip_address"),
+                count=2,
+                detail=f"Explicit credential use followed by network logon "
+                       f"within {window.seconds}s: {user}",
+            ))
+    return alerts
+
+
+def _detect_ntlm_relay(by_id: dict) -> list[dict]:
+    """lateral-010: 4624 type 3 with NTLM auth where IP doesn't match computer name."""
+    rule = _rule("lateral-010")
+    alerts = []
+    for event in by_id.get(4624, []):
+        if event.get("logon_type") != 3:
+            continue
+        auth_pkg = event.get("raw", {}).get("AuthenticationPackageName", "").upper()
+        if "NTLM" not in auth_pkg:
+            continue
+        ip = event.get("ip_address", "")
+        computer = event.get("computer", "").lower().split(".")[0]
+        # Flag if source IP is present and doesn't resolve to the computer name
+        if ip and _is_ip(ip) and not ip.startswith("127."):
+            alerts.append(_make_alert(
+                rule=rule,
+                events=[event],
+                computer=event["computer"],
+                user=event["user"],
+                ip=ip,
+                count=1,
+                detail=f"NTLM network logon from {ip} to {computer} "
+                       f"— possible relay",
+            ))
+    return alerts
+
+
+# ---------------------------------------------------------------------------
+# Process & Execution
+# ---------------------------------------------------------------------------
+
+def _detect_sensitive_file_access(by_id: dict) -> list[dict]:
+    """exec-007: 4663 file access on SAM, NTDS.dit, SYSTEM hive."""
+    rule = _rule("exec-007")
+    alerts = []
+    for event in by_id.get(4663, []):
+        obj_name = (event.get("raw", {}).get("ObjectName", "")
+                    or event.get("message", "")).lower()
+        if any(p in obj_name for p in SENSITIVE_FILE_PATHS):
+            alerts.append(_make_alert(
+                rule=rule,
+                events=[event],
+                computer=event["computer"],
+                user=event["user"],
+                ip=None,
+                count=1,
+                detail=f"Sensitive file accessed: {obj_name[-80:]}",
+            ))
+    return alerts
+
+
+# ---------------------------------------------------------------------------
+# Defense evasion
+# ---------------------------------------------------------------------------
+
+def _detect_evasion_sequence(by_id: dict) -> list[dict]:
+    """evasion-019: audit policy changed (4719) then log cleared (1102) within 5 min."""
+    rule = _rule("evasion-019")
+    alerts = []
+    window = timedelta(minutes=5)
+
+    policy_changes = sorted(by_id.get(4719, []), key=lambda e: e["timestamp"])
+    log_clears = sorted(by_id.get(1102, []), key=lambda e: e["timestamp"])
+
+    for change in policy_changes:
+        ts = change["timestamp"]
+        matching = [
+            c for c in log_clears
+            if ts <= c["timestamp"] <= ts + window
+        ]
+        if matching:
+            alerts.append(_make_alert(
+                rule=rule,
+                events=[change, matching[0]],
+                computer=change["computer"],
+                user=change.get("user"),
+                ip=None,
+                count=2,
+                detail=f"Audit policy changed then log cleared "
+                       f"within {window.seconds // 60} min",
+            ))
+    return alerts
+
+
+def _detect_defender_disabled(by_id: dict) -> list[dict]:
+    """evasion-020: 4719 where SubcategoryGuid matches MPSSVC (Defender policy)."""
+    rule = _rule("evasion-020")
+    alerts = []
+    for event in by_id.get(4719, []):
+        guid = event.get("raw", {}).get("SubcategoryGuid", "")
+        if MPSSVC_SUBCATEGORY_GUID in guid:
+            alerts.append(_make_alert(
+                rule=rule,
+                events=[event],
+                computer=event["computer"],
+                user=event["user"],
+                ip=None,
+                count=1,
+                detail=f"Windows Defender audit policy disabled "
+                       f"(SubcategoryGuid: {guid})",
+            ))
+    return alerts
+
+
+def _detect_sensitive_permission_change(by_id: dict) -> list[dict]:
+    """evasion-017: 4670 on sensitive objects (AD, SAM, LSASS, GPO)."""
+    rule = _rule("evasion-017")
+    alerts = []
+    sensitive_objects = [
+        "\\sam", "\\lsass", "ntds", "grouppolicy",
+        "\\policies\\", "cn=domain", "defaultsecuritydescriptor",
+    ]
+    for event in by_id.get(4670, []):
+        obj_name = (event.get("raw", {}).get("ObjectName", "")
+                    or event.get("message", "")).lower()
+        if any(s in obj_name for s in sensitive_objects):
+            alerts.append(_make_alert(
+                rule=rule,
+                events=[event],
+                computer=event["computer"],
+                user=event["user"],
+                ip=None,
+                count=1,
+                detail=f"Permissions changed on sensitive object: {obj_name[-80:]}",
+            ))
+    return alerts
+
+
+# ---------------------------------------------------------------------------
 # Deduplication
 # ---------------------------------------------------------------------------
 
@@ -1157,6 +1562,11 @@ def _log_audit_caveats(events: list[dict]) -> None:
         logger.info(
             "No PowerShell ScriptBlock events (4104) found. "
             "Enable PowerShell ScriptBlock Logging for exec-004."
+        )
+    if not event_ids_present & REQUIRES_OBJECT_ACCESS_AUDITING:
+        logger.info(
+            "No object access events (4663/4670/5140) found. "
+            "Enable 'Audit Object Access' policy for exec-007 and evasion-017."
         )
     dc_present = event_ids_present & DC_ONLY_EVENT_IDS
     if dc_present:

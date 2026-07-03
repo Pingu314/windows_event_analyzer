@@ -1,5 +1,5 @@
 """
-risk_scorer.py — Risk Scorer for Windows Event Analyzer
+risk_scorer.py - Risk Scorer for Windows Event Analyzer
 
 Produces a 0–100 risk score, severity label and breakdown for each alert.
 CRITICAL events auto-escalate to score 100 regardless of weighted calculation.
@@ -36,7 +36,9 @@ _RULE_WEIGHT_MAP: dict[str, list[str]] = {
     "logon-004":   ["off_hours_logon"],
     "logon-005":   ["rdp_reconnect_anomaly"],
     "logon-006":   ["rdp_logon"],
+    "logon-007":   ["service_account_logon"],
     "lockout-001": ["account_lockout"],
+    "lockout-002": ["mass_lockout"],
     "replay-001":  ["replay_attack"],
     "special-001": ["special_groups_logon"],
 
@@ -59,6 +61,7 @@ _RULE_WEIGHT_MAP: dict[str, list[str]] = {
     "group-006":   ["shadow_admin_acl"],
     "recon-001":   ["group_recon"],
     "recon-002":   ["group_recon"],
+    "recon-003":   ["account_enumeration"],
 
     # Privilege escalation
     "priv-001":    ["special_privilege_logon"],
@@ -80,6 +83,9 @@ _RULE_WEIGHT_MAP: dict[str, list[str]] = {
     "persist-008": ["external_device"],
     "persist-009": ["cert_request"],
     "persist-010": ["cert_approved"],
+    "persist-011": ["registry_autorun"],
+    "persist-012": ["wmi_subscription"],
+    "persist-013": ["ssp_loaded"],
 
     # Lateral movement
     "lateral-001": ["lateral_movement_sequence"],
@@ -88,6 +94,10 @@ _RULE_WEIGHT_MAP: dict[str, list[str]] = {
     "lateral-004": ["ntlm_auth"],
     "lateral-005": ["smb_share_access"],
     "lateral-006": ["smb_share_enumeration"],
+    "lateral-007": ["explicit_credential_network"],
+    "lateral-008": ["kerberoasting_rc4"],
+    "lateral-009": ["runas_netonly"],
+    "lateral-010": ["ntlm_relay"],
 
     # Execution
     "exec-001":    ["suspicious_process"],
@@ -96,6 +106,7 @@ _RULE_WEIGHT_MAP: dict[str, list[str]] = {
     "exec-004":    ["powershell_scriptblock"],
     "exec-005":    ["registry_process_sequence"],
     "exec-006":    ["suspicious_process"],
+    "exec-007":    ["sensitive_file_access"],
 
     # Defense evasion
     "evasion-001": ["audit_log_cleared"],
@@ -116,6 +127,8 @@ _RULE_WEIGHT_MAP: dict[str, list[str]] = {
     "evasion-016": ["boot_config_loaded"],
     "evasion-017": ["permissions_changed"],
     "evasion-018": ["password_policy_api"],
+    "evasion-019": ["audit_log_clear_sequence"],
+    "evasion-020": ["defender_disabled"],
 
     # Active Directory
     "ad-001":      ["ad_object_modified"],

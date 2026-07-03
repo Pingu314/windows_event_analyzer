@@ -67,6 +67,7 @@ SEVERITY_LOW = 0
 CRITICAL_EVENT_IDS = {
     1102,   # Audit log cleared
     4649,   # Replay attack detected
+    4663,   # Sensitive file access (SAM/NTDS.dit) - only via exec-007 filter
     4713,   # Kerberos policy changed
     4765,   # SID History added
     4794,   # DSRM password set
@@ -96,6 +97,8 @@ WEIGHTS = {
     "account_lockout":               20,
     "replay_attack":                 50,  # CRITICAL
     "special_groups_logon":          25,
+    "service_account_logon":         35,
+    "mass_lockout":                  30,
 
     # Account management
     "account_created":               20,
@@ -114,6 +117,7 @@ WEIGHTS = {
     "sid_history_failed":            30,
     "shadow_admin_acl":              30,
     "group_recon":                   15,
+    "account_enumeration":           25,
 
     # Privilege escalation
     "special_privilege_logon":       20,
@@ -135,6 +139,9 @@ WEIGHTS = {
     "external_device":               15,
     "cert_request":                  15,
     "cert_approved":                 20,
+    "registry_autorun":              30,
+    "wmi_subscription":              35,
+    "ssp_loaded":                    35,
 
     # Lateral movement
     "lateral_movement_sequence":     30,
@@ -143,6 +150,10 @@ WEIGHTS = {
     "ntlm_auth":                     10,
     "smb_share_access":              15,
     "smb_share_enumeration":         20,
+    "explicit_credential_network":   35,
+    "kerberoasting_rc4":             40,
+    "runas_netonly":                 20,
+    "ntlm_relay":                    40,
 
     # Process execution
     "suspicious_process":            25,
@@ -150,9 +161,11 @@ WEIGHTS = {
     "short_lived_process":           15,
     "powershell_scriptblock":        25,
     "registry_process_sequence":     30,
+    "sensitive_file_access":         50,  # CRITICAL
 
     # Defense evasion
     "audit_log_cleared":             50,  # CRITICAL
+    "audit_log_clear_sequence":      50,  # CRITICAL
     "audit_policy_changed":          30,
     "crash_on_audit_fail":           50,  # CRITICAL
     "system_time_changed":           25,
@@ -165,6 +178,8 @@ WEIGHTS = {
     "firewall_rule_not_applied":     35,
     "firewall_policy_failed":        25,
     "kerberos_policy_changed":       50,  # CRITICAL
+    "password_policy_api":           15,
+    "defender_disabled":             50,  # CRITICAL
 
     # Active Directory
     "ad_object_modified":            40,  # CRITICAL
@@ -180,7 +195,6 @@ WEIGHTS = {
     "event_log_stopped":             50,  # CRITICAL
     "unexpected_shutdown":           35,
     "boot_config_loaded":            40,  # CRITICAL
-    "password_policy_api":           15,
 }
 
 # Maximum score (capped)
@@ -188,12 +202,13 @@ MAX_SCORE = 100
 
 # ---------------------------------------------------------------------------
 # Suspicious process indicators
-# (used by exec-001 and exec-002 rules)
 # ---------------------------------------------------------------------------
 
 SUSPICIOUS_PARENT_CHILD = [
     ("winword.exe",     "cmd.exe"),
     ("winword.exe",     "powershell.exe"),
+    ("services.exe",    "cmd.exe"),
+    ("services.exe",    "powershell.exe"),
     ("excel.exe",       "cmd.exe"),
     ("excel.exe",       "powershell.exe"),
     ("outlook.exe",     "cmd.exe"),
@@ -205,6 +220,16 @@ SUSPICIOUS_PARENT_CHILD = [
     ("regsvr32.exe",    "powershell.exe"),
     ("svchost.exe",     "cmd.exe"),
     ("lsass.exe",       "cmd.exe"),
+    ("conhost.exe",     "powershell.exe"),
+    ("conhost.exe",     "cmd.exe"),
+    ("werfault.exe",    "cmd.exe"),
+    ("mmc.exe",         "powershell.exe"),
+    ("mmc.exe",         "cmd.exe"),
+    ("cmd.exe",         "svchost.exe"),
+    ("powershell.exe",  "svchost.exe"),
+    ("wscript.exe",     "svchost.exe"),
+    ("cscript.exe",     "svchost.exe"),
+    ("mshta.exe",       "svchost.exe"),
 ]
 
 SUSPICIOUS_CMDLINE_KEYWORDS = [
@@ -232,6 +257,28 @@ SUSPICIOUS_CMDLINE_KEYWORDS = [
     "system.reflection",
     "virtualalloc",
     "writeprocessmemory",
+    "whoami /all",
+    "net group",
+    "dsquery",
+    "-windowstyle hidden",
+    "start-process",
+    "invoke-mimikatz",
+    "sharphound",
+    "bloodhound",
+    "add-mppreference",          # Windows Defender exclusion
+    "set-mppreference",          # Windows Defender disable
+    "disablerealtimemonitoring",
+    "vssadmin delete shadows",   # ransomware indicator
+    "wbadmin delete catalog",    # ransomware indicator
+    "bcdedit /set",              # boot config tamper
+    "fsutil usn deletejournal",  # anti-forensics
+    "stratum+tcp",
+    "stratum+ssl",
+    "-o pool.",
+    "--donate-level",
+    "xmrig",
+    "--cuda",
+    "--opencl",
 ]
 
 SUSPICIOUS_PROCESSES = [
@@ -249,6 +296,23 @@ SUSPICIOUS_PROCESSES = [
     "cobalt",
     "beacon.exe",
     "meterpreter",
+    "rubeus.exe",
+    "sharpup.exe",
+    "seatbelt.exe",
+    "winpeas.exe",
+    "lazagne.exe",
+    "crackmapexec",
+    "impacket",
+    "cobaltstrike",
+    "xmrig.exe",
+    "minergate.exe",
+    "cpuminer.exe",
+    "ethminer.exe",
+    "nbminer.exe",
+    "phoenixminer.exe",
+    "t-rex.exe",
+    "gminer.exe",
+    "lolminer.exe",
 ]
 
 # ---------------------------------------------------------------------------
@@ -371,7 +435,8 @@ DEFAULT_OUTPUT_DIR = Path("output")
 REPORT_CSV_FIELDNAMES = [
     "rule_id", "rule", "category", "mitre", "sigma_severity",
     "severity", "score", "computer", "user", "ip", "count",
-    "detail", "mitre_tags",
+    "detail", "mitre_tags", "intel_country", "intel_org",
+    "intel_is_tor", "user_context", "computer_context",
 ]
 
 # ---------------------------------------------------------------------------
@@ -443,3 +508,87 @@ SENSITIVE_PRIVILEGES = [
     "SeCreateTokenPrivilege",
     "SeSecurityPrivilege",
 ]
+
+# ---------------------------------------------------------------------------
+# Channel support
+# ---------------------------------------------------------------------------
+
+# Accepted log channels in JSONL parser
+# Security is always included. Add Sysmon/Defender when those channels
+# are present in your dataset.
+SUPPORTED_CHANNELS = {
+    "Security",
+    "Microsoft-Windows-Sysmon/Operational",
+    "Microsoft-Windows-Windows Defender/Operational",
+    "System",
+}
+
+# Sysmon event IDs (Channel: Microsoft-Windows-Sysmon/Operational)
+SYSMON_EVENT_IDS = {
+    1,   # Process Create
+    2,   # File creation time changed
+    3,   # Network connection
+    5,   # Process terminated
+    7,   # Image loaded
+    8,   # CreateRemoteThread
+    10,  # ProcessAccess
+    11,  # FileCreate
+    12,  # RegistryEvent (object create/delete)
+    13,  # RegistryEvent (value set)
+    15,  # FileCreateStreamHash
+    17,  # PipeEvent (created)
+    18,  # PipeEvent (connected)
+    22,  # DNSEvent
+    23,  # FileDelete
+    25,  # ProcessTampering
+}
+
+# Windows Defender event IDs (Channel: Microsoft-Windows-Windows Defender/Operational)
+DEFENDER_EVENT_IDS = {
+    1116,  # Malware detected
+    1117,  # Action taken on malware
+    1006,  # Scan result
+    1008,  # Scan failed
+    5001,  # Real-time protection disabled
+    5004,  # Real-time protection configuration changed
+    5007,  # Configuration changed
+    5010,  # Scanning for malware disabled
+    5012,  # Scanning for viruses disabled
+}
+
+# System log event IDs (Channel: System)
+SYSTEM_EVENT_IDS = {
+    7034,  # Service crashed unexpectedly
+    7035,  # Service sent a start/stop control
+    7036,  # Service entered running/stopped state
+    7040,  # Service start type changed
+    7045,  # New service installed (also in Security 4697)
+}
+
+# Sensitive file paths - access triggers exec-007
+SENSITIVE_FILE_PATHS = [
+    "\\sam",
+    "\\ntds.dit",
+    "\\system",
+    "\\security",
+    "\\lsass",
+]
+
+# Registry keys that indicate persistence or defence evasion when modified
+SENSITIVE_REGISTRY_PATHS = [
+    "currentversion\\run",
+    "currentversion\\runonce",
+    "currentversion\\runservices",
+    "currentversion\\policies\\explorer\\run",
+    "group policy\\scripts",
+    "winlogon\\userinit",
+    "winlogon\\shell",
+    "currentcontrolset\\services",           # service binary path tampering
+    "currentcontrolset\\control\\lsa",       # LSA protection bypass
+    "currentcontrolset\\control\\securityproviders",  # SSP manipulation
+    "currentcontrolset\\control\\print\\monitors",    # print monitor DLL hijack
+]
+
+# WMI subscription filter GUID for Defender audit policy (evasion-020)
+# SubcategoryGuid for MPSSVC Rule-Level Policy Change
+MPSSVC_SUBCATEGORY_GUID = "{0CCE9248-69AE-11D9-BED3-505054503030}"
