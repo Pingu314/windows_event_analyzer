@@ -20,6 +20,8 @@ def _no_api_tokens(monkeypatch):
     """
     monkeypatch.setattr("src.enricher._IPINFO_TOKEN", "")
     monkeypatch.setattr("src.enricher._ABUSEIPDB_TOKEN", "")
+    monkeypatch.setattr("src.enricher._VIRUSTOTAL_TOKEN", "")
+    monkeypatch.setattr("src.enricher._GREYNOISE_TOKEN", "")
 
 
 # ---------------------------------------------------------------------------

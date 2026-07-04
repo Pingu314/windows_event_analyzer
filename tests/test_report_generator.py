@@ -60,3 +60,17 @@ def test_print_summary(capsys, sample_alerts):
 def test_print_summary_no_alerts(capsys):
     ReportGenerator().print_summary([])
     assert "No alerts detected." in capsys.readouterr().out
+
+
+def test_print_summary_flags_tor_and_high_risk(capsys, sample_alerts):
+    # attach intel to the first CRITICAL/HIGH alerts
+    flagged = [a for a in sample_alerts
+               if a["risk"]["severity"] in ("CRITICAL", "HIGH")]
+    flagged[0]["intel"] = {"is_tor": True, "org": "Tor Exit"}
+    if len(flagged) > 1:
+        flagged[1]["intel"] = {"is_tor": False, "country": "KP"}
+
+    ReportGenerator().print_summary(sample_alerts)
+    out = capsys.readouterr().out
+    assert "TOR EXIT NODE" in out
+    assert "HIGH-RISK COUNTRY" in out

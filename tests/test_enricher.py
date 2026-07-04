@@ -11,10 +11,12 @@ from src.enricher import (
     AbuseIPDBEnricher,
     AlertContextEnricher,
     ComputerContextEnricher,
+    GreyNoiseEnricher,
     IPEnricher,
     PrivilegeEnricher,
     ProcessContextEnricher,
     UserContextEnricher,
+    VirusTotalEnricher,
     _is_private,
 )
 from tests.conftest import make_event
@@ -251,3 +253,140 @@ def test_orchestrator_adds_all_context_keys():
     for key in ("intel", "abuse_intel", "user_context",
                 "computer_context", "process_context", "privilege_context"):
         assert key in alert
+
+
+# ---------------------------------------------------------------------------
+# HTTP error handling (all API enrichers share the pattern)
+# ---------------------------------------------------------------------------
+
+
+def _http_error(code: int):
+    return urllib.error.HTTPError("http://x", code, "err", {}, None)
+
+
+@pytest.mark.parametrize("exc", [
+    _http_error(429),
+    _http_error(500),
+    urllib.error.URLError("down"),
+    RuntimeError("unexpected"),
+])
+def test_ipinfo_error_paths(monkeypatch, exc):
+    def fake_urlopen(req, timeout=None):
+        raise exc
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    intel = IPEnricher(token="x").get_ip_info("8.8.8.8")
+    assert intel["country"] is None
+
+
+@pytest.mark.parametrize("exc", [
+    _http_error(429),
+    _http_error(500),
+    urllib.error.URLError("down"),
+    RuntimeError("unexpected"),
+])
+def test_abuseipdb_error_paths(monkeypatch, exc):
+    def fake_urlopen(req, timeout=None):
+        raise exc
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    result = AbuseIPDBEnricher(token="x").get_abuse_score("8.8.8.8")
+    assert result["abuse_score"] is None
+
+
+def test_ip_enricher_empty_ip():
+    assert IPEnricher(token="x").get_ip_info("")["country"] is None
+
+
+# ---------------------------------------------------------------------------
+# VirusTotalEnricher
+# ---------------------------------------------------------------------------
+
+
+def test_virustotal_query(monkeypatch):
+    def fake_urlopen(req, timeout=None):
+        assert req.headers.get("X-apikey") == "vt-token"
+        return _FakeResponse({"data": {"attributes": {
+            "last_analysis_stats": {"malicious": 11, "suspicious": 2,
+                                    "harmless": 60},
+            "reputation": -40,
+            "as_owner": "EvilHost Ltd",
+            "country": "RU",
+        }}})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    verdict = VirusTotalEnricher(token="vt-token").get_verdict("91.240.118.29")
+    assert verdict["malicious"] == 11
+    assert verdict["as_owner"] == "EvilHost Ltd"
+    assert verdict["country"] == "RU"
+
+
+def test_virustotal_private_tokenless_and_errors(monkeypatch):
+    assert VirusTotalEnricher(token="x").get_verdict("10.0.0.1")["malicious"] is None
+    assert VirusTotalEnricher().get_verdict("8.8.8.8")["malicious"] is None
+
+    def fake_urlopen(req, timeout=None):
+        raise _http_error(429)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert VirusTotalEnricher(token="x").get_verdict("8.8.8.8")["malicious"] is None
+
+
+def test_virustotal_enrich_alerts():
+    alerts = VirusTotalEnricher().enrich_alerts([_sample_alert(ip=None)])
+    assert alerts[0]["vt_intel"]["malicious"] is None
+
+
+# ---------------------------------------------------------------------------
+# GreyNoiseEnricher
+# ---------------------------------------------------------------------------
+
+
+def test_greynoise_query(monkeypatch):
+    def fake_urlopen(req, timeout=None):
+        return _FakeResponse({"classification": "malicious", "noise": True,
+                              "riot": False, "name": "unknown scanner",
+                              "last_seen": "2026-07-01"})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    result = GreyNoiseEnricher(token="gn").get_classification("91.240.118.29")
+    assert result["classification"] == "malicious"
+    assert result["is_noise"] is True
+
+
+def test_greynoise_404_means_unobserved(monkeypatch):
+    def fake_urlopen(req, timeout=None):
+        raise _http_error(404)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    # note: TEST-NET ranges (203.0.113.x) count as private in ipaddress,
+    # so a real public IP is needed to reach the HTTP layer
+    result = GreyNoiseEnricher(token="gn").get_classification("91.240.118.29")
+    assert result["classification"] == "unknown"
+    assert result["is_noise"] is False
+
+
+@pytest.mark.parametrize("exc", [
+    _http_error(429),
+    _http_error(500),
+    urllib.error.URLError("down"),
+    RuntimeError("unexpected"),
+])
+def test_greynoise_error_paths(monkeypatch, exc):
+    def fake_urlopen(req, timeout=None):
+        raise exc
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    result = GreyNoiseEnricher(token="gn").get_classification("8.8.8.8")
+    assert result["classification"] is None
+
+
+def test_greynoise_private_and_tokenless():
+    assert GreyNoiseEnricher(token="x").get_classification("10.0.0.1")["is_noise"] is False
+    assert GreyNoiseEnricher().get_classification("8.8.8.8")["classification"] is None
+
+
+def test_orchestrator_includes_new_intel_keys():
+    alerts = AlertContextEnricher().enrich_alerts([_sample_alert(ip="10.0.0.1")])
+    assert "vt_intel" in alerts[0]
+    assert "greynoise_intel" in alerts[0]

@@ -239,3 +239,115 @@ def test_level_name():
     assert _level_name(2) == "Error"
     assert _level_name(4) == "Information"
     assert _level_name(99) == "Unknown"
+
+
+# ---------------------------------------------------------------------------
+# EVTX file parsing (mocked python-evtx)
+# ---------------------------------------------------------------------------
+
+
+class _FakeRecord:
+    def __init__(self, xml: str):
+        self._xml = xml
+
+    def xml(self) -> str:
+        return self._xml
+
+
+class _FakeEvtx:
+    """Stand-in for Evtx.Evtx - yields canned XML records."""
+
+    def __init__(self, path):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def records(self):
+        yield _FakeRecord(_EVTX_XML)
+        yield _FakeRecord("<broken")            # malformed, must be skipped
+
+
+def test_parse_evtx_with_mocked_lib(tmp_path, monkeypatch):
+    import src.parser as parser_mod
+
+    class _FakeLib:
+        Evtx = _FakeEvtx
+
+    monkeypatch.setattr(parser_mod, "_evtx_lib", _FakeLib)
+    monkeypatch.setattr(parser_mod, "_EVTX_AVAILABLE", True)
+
+    evtx_file = tmp_path / "log.evtx"
+    evtx_file.write_bytes(b"\x00")
+    events = parse(evtx_file)
+    assert len(events) == 1
+    assert events[0]["event_id"] == 4625
+
+
+def test_parse_evtx_without_library_raises(tmp_path, monkeypatch):
+    import src.parser as parser_mod
+    monkeypatch.setattr(parser_mod, "_EVTX_AVAILABLE", False)
+    evtx_file = tmp_path / "log.evtx"
+    evtx_file.write_bytes(b"\x00")
+    with pytest.raises(ImportError, match="python-evtx"):
+        parse(evtx_file)
+
+
+# ---------------------------------------------------------------------------
+# Error paths
+# ---------------------------------------------------------------------------
+
+
+def test_parse_csv_unreadable_path_raises(tmp_path):
+    # a directory with a .csv name: exists but cannot be opened as a file
+    bad = tmp_path / "dir.csv"
+    bad.mkdir()
+    with pytest.raises(OSError):
+        parse(bad)
+
+
+def test_parse_jsonl_unreadable_path_raises(tmp_path):
+    bad = tmp_path / "dir.json"
+    bad.mkdir()
+    with pytest.raises(OSError):
+        parse(bad)
+
+
+def test_parse_csv_headerless_file(tmp_path):
+    empty = tmp_path / "empty.csv"
+    empty.write_text("")
+    assert parse(empty) == []
+
+
+def test_parse_csv_row_without_event_id(tmp_path):
+    path = tmp_path / "noid.csv"
+    path.write_text(
+        "Event ID,Date and Time,Computer\n"
+        ",01/15/2026 09:00:00,ws01\n"
+    )
+    assert parse(path) == []
+
+
+def test_parse_csv_invalid_logon_type_kept_as_none(tmp_path):
+    path = tmp_path / "lt.csv"
+    path.write_text(
+        "Event ID,Date and Time,Computer,Logon Type\n"
+        "4624,01/15/2026 09:00:00,ws01,abc\n"
+    )
+    events = parse(path)
+    assert events[0]["logon_type"] is None
+
+
+def test_parse_jsonl_non_numeric_event_id_skipped(tmp_path):
+    path = tmp_path / "badid.json"
+    path.write_text(
+        '{"EventID": "abc", "EventTime": "2026-01-15 09:00:00", "Channel": "Security"}\n'
+        '{"EventID": 4624, "EventTime": "2026-01-15 09:00:00", "Channel": "Security", '
+        '"LogonType": "xyz"}\n'
+    )
+    events = parse(path)
+    assert len(events) == 1
+    assert events[0]["logon_type"] is None

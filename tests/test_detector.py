@@ -427,3 +427,53 @@ def test_is_ip():
     assert not _is_ip("ws01.corp.local")
     assert not _is_ip("")
     assert not _is_ip(None)
+
+
+# ---------------------------------------------------------------------------
+# Remaining branches
+# ---------------------------------------------------------------------------
+
+
+def test_privileged_group_member_removed_and_changed():
+    events = [
+        make_event(4733, raw={"TargetUserName": "Backup Operators"}),
+        make_event(4735, raw={"TargetUserName": "Domain Admins"}),
+    ]
+    ids = rule_ids(run_all_detections(events))
+    assert "group-002" in ids
+    assert "group-003" in ids
+
+
+def test_sequence_rules_skip_events_without_user():
+    events = [
+        make_event(4624, timestamp=BASE, user=None),
+        make_event(4672, timestamp=BASE + timedelta(seconds=5), user=None),
+        make_event(4768, timestamp=BASE, user=None),
+        make_event(4769, timestamp=BASE + timedelta(minutes=1), user=None),
+        make_event(4648, timestamp=BASE, user=None),
+    ]
+    ids = rule_ids(run_all_detections(events))
+    assert "priv-004" not in ids
+    assert "lateral-003" not in ids
+    assert "lateral-007" not in ids
+
+
+def test_process_exit_without_creation_ignored():
+    events = [
+        make_event(4688, timestamp=BASE, raw={"NewProcessId": "0x1"}),
+        make_event(4689, timestamp=BASE + timedelta(seconds=2),
+                   raw={"ProcessId": "0x999"}),      # no matching creation
+    ]
+    assert "exec-003" not in rule_ids(run_all_detections(events))
+
+
+def test_scheduled_task_without_name_uses_raw_fallback():
+    event = make_event(4702, task_name=None, raw={"TaskName": "\\RawTask"})
+    alerts = run_all_detections([event])
+    persist = next(a for a in alerts if a["rule_id"] == "persist-002")
+    assert "RawTask" in persist["detail"]
+
+
+def test_service_account_logon_without_user_skipped():
+    alerts = run_all_detections([make_event(4624, logon_type=2, user=None)])
+    assert "logon-007" not in rule_ids(alerts)

@@ -92,3 +92,64 @@ def test_main_without_valid_input_exits(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["evtx-analyze", str(tmp_path / "nope.csv")])
     with pytest.raises(SystemExit):
         main()
+
+
+# ---------------------------------------------------------------------------
+# Input flag combinations
+# ---------------------------------------------------------------------------
+
+
+def test_collect_recursive_on_single_file(sample_csv_path):
+    assert collect_log_files_recursive(sample_csv_path) == [sample_csv_path]
+
+
+def test_main_with_logs_flag(sample_csv_path, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [
+        "evtx-analyze", "--logs", str(sample_csv_path),
+        "--output", str(tmp_path / "out"), "--no-export",
+    ])
+    main()
+    assert "TRIAGE SUMMARY" in capsys.readouterr().out
+
+
+def test_main_with_logs_dir_recursive(sample_csv_path, tmp_path, monkeypatch, capsys):
+    root = tmp_path / "logs"
+    nested = root / "sub"
+    nested.mkdir(parents=True)
+    (nested / "a.csv").write_text(sample_csv_path.read_text())
+    (root / "b.csv").write_text(sample_csv_path.read_text())
+
+    monkeypatch.setattr(sys, "argv", [
+        "evtx-analyze", "--logs-dir", str(root), "--recursive",
+        "--output", str(tmp_path / "out"), "--no-export",
+    ])
+    main()
+    out = capsys.readouterr().out
+    assert "TRIAGE SUMMARY" in out
+
+
+def test_main_positional_directory_recursive(sample_csv_path, tmp_path,
+                                             monkeypatch, capsys):
+    root = tmp_path / "logs"
+    nested = root / "deep"
+    nested.mkdir(parents=True)
+    (nested / "a.csv").write_text(sample_csv_path.read_text())
+
+    monkeypatch.setattr(sys, "argv", [
+        "evtx-analyze", str(root), "--recursive",
+        "--output", str(tmp_path / "out"), "--no-export",
+    ])
+    main()
+    assert "TRIAGE SUMMARY" in capsys.readouterr().out
+
+
+def test_main_export_failure_is_reported(sample_csv_path, tmp_path,
+                                         monkeypatch, capsys):
+    # --output points at an existing *file*, so mkdir raises OSError
+    blocker = tmp_path / "blocked"
+    blocker.write_text("i am a file")
+    monkeypatch.setattr(sys, "argv", [
+        "evtx-analyze", str(sample_csv_path), "--output", str(blocker),
+    ])
+    main()
+    assert "Could not write JSON report" in capsys.readouterr().out
