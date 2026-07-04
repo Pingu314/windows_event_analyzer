@@ -1,7 +1,7 @@
 # Windows Event Analyzer
 
 [![CI](https://github.com/Pingu314/windows_event_analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/Pingu314/windows_event_analyzer/actions/workflows/ci.yml)
-![Coverage](https://img.shields.io/badge/coverage-91%25-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.10%20%E2%80%93%203.14-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -65,8 +65,9 @@ git clone https://github.com/Pingu314/windows_event_analyzer.git
 cd windows_event_analyzer
 pip install -e .
 
-# analyze the bundled sample log
+# analyze the bundled sample logs
 evtx-analyze data/sample_logs/security.csv
+evtx-analyze data/sample_logs/sample_attack_chain.json   # full intrusion chain
 
 # analyze your own logs - files, directories, mixed formats
 evtx-analyze security.evtx
@@ -93,7 +94,7 @@ lateral movement it enables in another are both caught.
 | Parse | `src/parser.py` | Normalises EVTX, Event Viewer CSV and JSONL (Security, Sysmon, Defender, System channels) into one event schema. Handles locale date formats, UTF-8 BOM, field-name aliases. |
 | Detect | `src/detector.py` | 94 rules: threshold rules (brute force, spray, mass lockout), sequence rules (logon→privilege, policy-change→log-clear), and single-event rules. Non-overlapping window clustering - one burst = one alert. |
 | Score | `src/risk_scorer.py` | Weighted 0–100 risk score with severity tiers. Critical events (log cleared, DSRM password, SID history…) auto-escalate to 100. |
-| Enrich | `src/enricher.py` | IP geolocation/Tor/ASN (ipinfo.io), IP reputation (AbuseIPDB), account classification (service/machine/privileged), host classification (DC/server/workstation), LOLBin + path anomaly, sensitive privileges. All API enrichers degrade gracefully without tokens. |
+| Enrich | `src/enricher.py` | IP geolocation/Tor/ASN (ipinfo.io), IP reputation (AbuseIPDB), vendor verdicts (VirusTotal), scanner/noise classification (GreyNoise), account classification (service/machine/privileged), host classification (DC/server/workstation), LOLBin + path anomaly, sensitive privileges. All API enrichers degrade gracefully without tokens. |
 | Map | `src/mitre_mapper.py` | Primary technique per rule plus contextual techniques from alert features. |
 | Report | `src/report_generator.py`, `src/dashboard.py` | Console triage summary, timestamped JSON/CSV reports, Flask REST API. |
 
@@ -145,9 +146,15 @@ Threat-intel enrichment is optional. Copy `.env.example` to `.env` and add
 free-tier tokens:
 
 ```
-IPINFO_TOKEN=...      # ipinfo.io   - 50k lookups/month free
-ABUSEIPDB_TOKEN=...   # AbuseIPDB   - 1k checks/day free
+IPINFO_TOKEN=...       # ipinfo.io  - 50k lookups/month free
+ABUSEIPDB_TOKEN=...    # AbuseIPDB  - 1k checks/day free
+VIRUSTOTAL_TOKEN=...   # VirusTotal - 500 lookups/day free
+GREYNOISE_TOKEN=...    # GreyNoise  - free community tier
 ```
+
+Each token unlocks one enricher; any subset works. GreyNoise is the SOC
+noise-filter: it tells internet-wide scanner background noise apart from
+targeted attacks against *your* network.
 
 Thresholds can also be overridden per run:
 
@@ -176,7 +183,7 @@ Detection is a trade-off between coverage and noise. Design choices made here:
 
 ```bash
 pip install -e ".[dev]"
-pytest            # 151 tests, coverage gate 80% (currently ~91%)
+pytest            # 289 tests, coverage gate 95% (currently ~98%)
 ```
 
 CI runs ruff + the test matrix on Python 3.10–3.14.

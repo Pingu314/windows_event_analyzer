@@ -4,7 +4,23 @@ All notable changes to this project are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.10.0] - 2026-07-04
+
+### Added
+- VirusTotal enricher: vendor verdict counts, reputation, AS owner per
+  alert IP (`VIRUSTOTAL_TOKEN`).
+- GreyNoise Community enricher: scanner/noise vs targeted-attack
+  classification per alert IP (`GREYNOISE_TOKEN`).
+- Curated attack-chain sample log (`data/sample_logs/sample_attack_chain.json`):
+  spray → enumeration → service-account RDP → privilege escalation →
+  encoded PowerShell → SAM access → triple persistence → Kerberoasting →
+  backdoor admin → Defender-off → log clear, including Sysmon and Defender
+  channel events.
+- Coverage gate raised to 95% (289 tests, ~98% coverage).
+
+### Changed
+- `.gitignore` reorganised by category; curated `sample_*.json` logs are
+  now tracked while raw exports stay ignored.
 
 ## [0.9.0] - 2026-07-04
 
