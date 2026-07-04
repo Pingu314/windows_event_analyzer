@@ -1,0 +1,14 @@
+; Mirror of ruff.toml so flake8 (editor integration) and ruff (CI) agree.
+[flake8]
+max-line-length = 100
+extend-ignore = E203, E501
+exclude =
+    .git,
+    .venv,
+    venv,
+    build,
+    dist,
+    __pycache__,
+    .ruff_cache,
+    .pytest_cache,
+    windows_event_analyzer.egg-info
