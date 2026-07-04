@@ -21,20 +21,32 @@ Both formats are normalised to the same event dict schema:
         "process_name": str | None,
         "task_name":    str | None,
         "service_name": str | None,
+        "channel":      str,       # log channel, e.g. "Security"
         "raw":          dict,      # original unparsed fields
     }
+
+Live capture (Windows only): parse_live() reads the local event log via
+wevtutil - no export step needed.
 """
 from __future__ import annotations
 
 import csv
 import json
 import logging
+import platform
+import re
+import subprocess
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 
-from config.settings import CSV_COLUMN_ALIASES, JSON_FIELD_ALIASES, SUPPORTED_CHANNELS
+from config.settings import (
+    CSV_COLUMN_ALIASES,
+    JSON_FIELD_ALIASES,
+    LIVE_MAX_EVENTS,
+    SUPPORTED_CHANNELS,
+)
 
 try:
     import Evtx.Evtx as _evtx_lib  # noqa: N813
@@ -108,6 +120,58 @@ def parse_many(paths: list[str | Path]) -> list[dict]:
     return all_events
 
 
+def parse_live(channel: str = "Security",
+               max_events: int = LIVE_MAX_EVENTS) -> list[dict]:
+    """Read the newest events directly from a local Windows event log.
+
+    Uses `wevtutil qe <channel> /f:renderedxml` - no export step required.
+    Reading the Security log requires an elevated (Administrator) shell.
+
+    Args:
+        channel: Event log channel, e.g. "Security", "System",
+            "Microsoft-Windows-Sysmon/Operational".
+        max_events: Newest N events to read.
+
+    Returns:
+        List of normalised event dicts, sorted by timestamp ascending.
+
+    Raises:
+        RuntimeError: If not running on Windows, or wevtutil fails
+            (typically: not elevated, or unknown channel).
+    """
+    if platform.system() != "Windows":
+        raise RuntimeError(
+            "Live capture uses wevtutil and only works on Windows. "
+            "On other systems, analyze an exported .evtx/.csv/.json file."
+        )
+
+    cmd = ["wevtutil", "qe", channel, f"/c:{max_events}",
+           "/rd:true", "/f:renderedxml"]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", check=True,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError("wevtutil not found on PATH") from e
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        raise RuntimeError(
+            f"wevtutil failed for channel '{channel}': {stderr or e}. "
+            "Reading the Security log requires an Administrator shell."
+        ) from e
+
+    events = []
+    for xml_str in re.findall(r"<Event .*?</Event>", proc.stdout, re.DOTALL):
+        event = _parse_evtx_record_xml(xml_str)
+        if event:
+            events.append(event)
+
+    events.sort(key=lambda e: e["timestamp"])
+    logger.info("Live capture: %d events from channel %s", len(events), channel)
+    return events
+
+
 # ---------------------------------------------------------------------------
 # EVTX parser
 # ---------------------------------------------------------------------------
@@ -166,6 +230,9 @@ def _parse_evtx_record_xml(xml_str: str) -> dict | None:
         computer_elem = system.find("e:Computer", ns)
         computer = (computer_elem.text or "" if computer_elem is not None else "")
 
+        channel_elem = system.find("e:Channel", ns)
+        channel = (channel_elem.text or "" if channel_elem is not None else "")
+
         level_elem = system.find("e:Level", ns)
         level = _level_name(int(level_elem.text or "0")
                             if level_elem is not None else 0)
@@ -209,6 +276,7 @@ def _parse_evtx_record_xml(xml_str: str) -> dict | None:
             "process_name": _clean_process(process_name),
             "task_name":    task_name,
             "service_name": service_name,
+            "channel":      channel or "Security",
             "raw":          data_fields,
         }
     except Exception as e:
@@ -304,6 +372,7 @@ def _parse_csv_row(row: dict, col_map: dict[str, str]) -> dict | None:
         "process_name": _clean_process(get("process_name")),
         "task_name":    get("task_name") or None,
         "service_name": get("service_name") or None,
+        "channel":      get("channel") or "Security",
         "raw":          dict(row),
     }
 
@@ -395,6 +464,7 @@ def _parse_jsonl_record(obj: dict) -> dict | None:
         "process_name": _clean_process(_get(*JSON_FIELD_ALIASES["process_name"])),
         "task_name":    obj.get("TaskName"),
         "service_name": obj.get("ServiceName"),
+        "channel":      _get(*JSON_FIELD_ALIASES["channel"]) or "Security",
         "raw":          obj,
     }
 

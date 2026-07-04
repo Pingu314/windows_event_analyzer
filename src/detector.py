@@ -1,15 +1,18 @@
 """
 detector.py - Windows Security Event Detector
 
-Implements 94 SIGMA-style detection rules across 8 categories:
+Implements 107 SIGMA-style detection rules across 8 categories:
   - Authentication & Logon
   - Account Management
   - Privilege & Escalation
   - Persistence
   - Lateral Movement
-  - Process & Execution
-  - Defense Evasion
+  - Process & Execution (Security + Sysmon channels)
+  - Defense Evasion (Security + Defender + System channels)
   - Active Directory
+
+Additional Sigma YAML rules can be loaded at runtime via
+sigma_loader.load_sigma_rules() and passed to run_all_detections().
 
 All rules return a standardised alert dict:
     {
@@ -45,6 +48,9 @@ from datetime import timedelta
 from pathlib import PureWindowsPath
 
 from config.settings import (
+    ALLOWLIST_COMPUTERS,
+    ALLOWLIST_IPS,
+    ALLOWLIST_USERS,
     BRUTE_FORCE_THRESHOLD,
     BRUTE_FORCE_WINDOW_MINUTES,
     BUSINESS_DAYS,
@@ -64,15 +70,19 @@ from config.settings import (
     REQUIRES_OBJECT_ACCESS_AUDITING,
     REQUIRES_POWERSHELL_LOGGING,
     REQUIRES_PROCESS_AUDITING,
+    SECURITY_SERVICES,
     SENSITIVE_FILE_PATHS,
     SENSITIVE_REGISTRY_PATHS,
     SERVICE_ACCOUNT_PATTERNS,
     SHORT_PROCESS_SECONDS,
     SPRAY_THRESHOLD,
     SPRAY_WINDOW_MINUTES,
+    STARTUP_FOLDER_PATTERNS,
     SUSPICIOUS_CMDLINE_KEYWORDS,
     SUSPICIOUS_PARENT_CHILD,
+    SUSPICIOUS_PORTS,
     SUSPICIOUS_PROCESSES,
+    SUSPICIOUS_TLDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -364,6 +374,51 @@ RULES: list[dict] = [
      "category": "Defense Evasion", "mitre": "T1562.001",
      "sigma_severity": "critical", "event_ids": [4719]},
 
+    # Sysmon channel (Microsoft-Windows-Sysmon/Operational)
+    {"rule_id": "sysmon-001", "rule": "Sysmon Process With Suspicious Command Line",
+     "category": "Execution", "mitre": "T1059",
+     "sigma_severity": "high", "event_ids": [1]},
+    {"rule_id": "sysmon-002", "rule": "Remote Thread Created (Process Injection)",
+     "category": "Execution", "mitre": "T1055",
+     "sigma_severity": "high", "event_ids": [8]},
+    {"rule_id": "sysmon-003", "rule": "LSASS Process Memory Access",
+     "category": "Execution", "mitre": "T1003.001",
+     "sigma_severity": "critical", "event_ids": [10]},
+    {"rule_id": "sysmon-004", "rule": "Sysmon Registry Autorun Modification",
+     "category": "Persistence", "mitre": "T1547.001",
+     "sigma_severity": "high", "event_ids": [12, 13]},
+    {"rule_id": "sysmon-005", "rule": "DNS Query to Suspicious TLD",
+     "category": "Execution", "mitre": "T1071.004",
+     "sigma_severity": "medium", "event_ids": [22]},
+    {"rule_id": "sysmon-006", "rule": "Process Tampering Detected",
+     "category": "Defense Evasion", "mitre": "T1055.012",
+     "sigma_severity": "high", "event_ids": [25]},
+    {"rule_id": "sysmon-007", "rule": "File Created in Startup Folder",
+     "category": "Persistence", "mitre": "T1547.001",
+     "sigma_severity": "high", "event_ids": [11]},
+    {"rule_id": "sysmon-008", "rule": "Network Connection by Suspicious Process",
+     "category": "Execution", "mitre": "T1071",
+     "sigma_severity": "medium", "event_ids": [3]},
+
+    # Windows Defender channel
+    {"rule_id": "defender-001", "rule": "Windows Defender Malware Detected",
+     "category": "Defense Evasion", "mitre": "T1204.002",
+     "sigma_severity": "high", "event_ids": [1116, 1117]},
+    {"rule_id": "defender-002", "rule": "Defender Real-Time Protection Disabled",
+     "category": "Defense Evasion", "mitre": "T1562.001",
+     "sigma_severity": "critical", "event_ids": [5001]},
+    {"rule_id": "defender-003", "rule": "Defender Configuration Tampered",
+     "category": "Defense Evasion", "mitre": "T1562.001",
+     "sigma_severity": "high", "event_ids": [5004, 5007, 5010, 5012]},
+
+    # System channel
+    {"rule_id": "system-001", "rule": "Security Service Start Type Changed",
+     "category": "Defense Evasion", "mitre": "T1562.001",
+     "sigma_severity": "high", "event_ids": [7040]},
+    {"rule_id": "system-002", "rule": "Security Service Crashed",
+     "category": "Defense Evasion", "mitre": "T1489",
+     "sigma_severity": "medium", "event_ids": [7034]},
+
     # Active Directory (DC-only)
     {"rule_id": "ad-001", "rule": "Active Directory Object Modified",
      "category": "Active Directory", "mitre": "T1484",
@@ -395,6 +450,7 @@ def run_all_detections(
     spray_window: int = SPRAY_WINDOW_MINUTES,
     lateral_threshold: int = LATERAL_THRESHOLD,
     lateral_window: int = LATERAL_WINDOW_MINUTES,
+    sigma_rules: list[dict] | None = None,
 ) -> list[dict]:
     """Run all detection rules against a normalised event list.
 
@@ -406,9 +462,11 @@ def run_all_detections(
         spray_window: Time window in minutes for spraying detection.
         lateral_threshold: Distinct target count to trigger lateral movement.
         lateral_window: Time window in minutes for lateral movement detection.
+        sigma_rules: Optional converted Sigma rules from
+            sigma_loader.load_sigma_rules().
 
     Returns:
-        Deduplicated list of alert dicts.
+        Deduplicated, allowlist-filtered list of alert dicts.
     """
     if not events:
         return []
@@ -462,8 +520,13 @@ def run_all_detections(
     alerts += _detect_evasion_sequence(by_id)
     alerts += _detect_defender_disabled(by_id)
     alerts += _detect_ntlm_relay(by_id)
+    alerts += _detect_sysmon_rules(by_id)
+    alerts += _detect_defender_channel_rules(by_id)
+    alerts += _detect_system_service_rules(by_id)
+    if sigma_rules:
+        alerts += _detect_sigma_rules(by_id, sigma_rules)
 
-    return _deduplicate(alerts)
+    return _apply_allowlist(_deduplicate(alerts))
 
 
 # ---------------------------------------------------------------------------
@@ -1452,6 +1515,299 @@ def _detect_sensitive_permission_change(by_id: dict) -> list[dict]:
                 detail=f"Permissions changed on sensitive object: {obj_name[-80:]}",
             ))
     return alerts
+
+
+# ---------------------------------------------------------------------------
+# Sysmon / Defender / System channel rules
+# ---------------------------------------------------------------------------
+
+def _channel(event: dict) -> str:
+    """Lowercase channel of an event ('' when unknown)."""
+    return (event.get("channel") or "").lower()
+
+
+def _sysmon_events(by_id: dict, event_id: int) -> list[dict]:
+    """Events with this ID that come from the Sysmon channel.
+
+    Low Sysmon event IDs (1, 3, 8, ...) would collide with other logs,
+    so the channel gate is mandatory here.
+    """
+    return [e for e in by_id.get(event_id, []) if "sysmon" in _channel(e)]
+
+
+def _detect_sysmon_rules(by_id: dict) -> list[dict]:
+    """sysmon-001..008: Sysmon operational channel detections."""
+    alerts = []
+
+    # sysmon-001: process create with suspicious command line
+    rule = _rule("sysmon-001")
+    for event in _sysmon_events(by_id, 1):
+        cmdline = (event.get("raw", {}).get("CommandLine", "") or "").lower()
+        matched = [kw for kw in SUSPICIOUS_CMDLINE_KEYWORDS if kw in cmdline]
+        if matched:
+            alerts.append(_make_alert(
+                rule=rule, events=[event], computer=event["computer"],
+                user=event["user"], ip=None, count=1,
+                detail=f"Sysmon process create, suspicious cmdline: "
+                       f"{', '.join(matched[:3])}",
+            ))
+
+    # sysmon-002: CreateRemoteThread
+    rule = _rule("sysmon-002")
+    for event in _sysmon_events(by_id, 8):
+        source = event.get("raw", {}).get("SourceImage", "")
+        target = event.get("raw", {}).get("TargetImage", "")
+        alerts.append(_make_alert(
+            rule=rule, events=[event], computer=event["computer"],
+            user=event["user"], ip=None, count=1,
+            detail=f"Remote thread: {PureWindowsPath(source).name or '?'} → "
+                   f"{PureWindowsPath(target).name or '?'}",
+        ))
+
+    # sysmon-003: LSASS access
+    rule = _rule("sysmon-003")
+    for event in _sysmon_events(by_id, 10):
+        target = (event.get("raw", {}).get("TargetImage", "") or "").lower()
+        if "lsass.exe" in target:
+            source = event.get("raw", {}).get("SourceImage", "")
+            alerts.append(_make_alert(
+                rule=rule, events=[event], computer=event["computer"],
+                user=event["user"], ip=None, count=1,
+                detail=f"LSASS memory access by "
+                       f"{PureWindowsPath(source).name or 'unknown process'}",
+            ))
+
+    # sysmon-004: registry autorun via Sysmon 12/13
+    rule = _rule("sysmon-004")
+    for eid in (12, 13):
+        for event in _sysmon_events(by_id, eid):
+            obj = (event.get("raw", {}).get("TargetObject", "") or "").lower()
+            if any(key in obj for key in SENSITIVE_REGISTRY_PATHS):
+                alerts.append(_make_alert(
+                    rule=rule, events=[event], computer=event["computer"],
+                    user=event["user"], ip=None, count=1,
+                    detail=f"Sensitive registry key set: {obj[-80:]}",
+                ))
+
+    # sysmon-005: DNS query to suspicious TLD
+    rule = _rule("sysmon-005")
+    for event in _sysmon_events(by_id, 22):
+        query = (event.get("raw", {}).get("QueryName", "") or "").lower()
+        if query and any(query.endswith(tld) for tld in SUSPICIOUS_TLDS):
+            alerts.append(_make_alert(
+                rule=rule, events=[event], computer=event["computer"],
+                user=event["user"], ip=None, count=1,
+                detail=f"DNS query to suspicious TLD: {query}",
+            ))
+
+    # sysmon-006: process tampering
+    rule = _rule("sysmon-006")
+    for event in _sysmon_events(by_id, 25):
+        image = event.get("raw", {}).get("Image", "")
+        alerts.append(_make_alert(
+            rule=rule, events=[event], computer=event["computer"],
+            user=event["user"], ip=None, count=1,
+            detail=f"Process tampering (hollowing/herpaderping): "
+                   f"{PureWindowsPath(image).name or 'unknown'}",
+        ))
+
+    # sysmon-007: file created in startup folder
+    rule = _rule("sysmon-007")
+    for event in _sysmon_events(by_id, 11):
+        target = (event.get("raw", {}).get("TargetFilename", "") or "").lower()
+        if any(p in target for p in STARTUP_FOLDER_PATTERNS):
+            alerts.append(_make_alert(
+                rule=rule, events=[event], computer=event["computer"],
+                user=event["user"], ip=None, count=1,
+                detail=f"File dropped in startup folder: {target[-80:]}",
+            ))
+
+    # sysmon-008: network connection by suspicious process or to C2 port
+    rule = _rule("sysmon-008")
+    for event in _sysmon_events(by_id, 3):
+        raw = event.get("raw", {})
+        image = (raw.get("Image", "") or "").lower()
+        image_base = PureWindowsPath(image).name if image else ""
+        port_str = str(raw.get("DestinationPort", "") or "")
+        port = int(port_str) if port_str.isdigit() else None
+        bad_process = any(mal in image_base for mal in SUSPICIOUS_PROCESSES)
+        bad_port = port in SUSPICIOUS_PORTS
+        if bad_process or bad_port:
+            dest = raw.get("DestinationIp", "") or "?"
+            alerts.append(_make_alert(
+                rule=rule, events=[event], computer=event["computer"],
+                user=event["user"], ip=event.get("ip_address"), count=1,
+                detail=f"Network connection by {image_base or 'unknown'} "
+                       f"to {dest}:{port_str or '?'}",
+            ))
+
+    return alerts
+
+
+def _detect_defender_channel_rules(by_id: dict) -> list[dict]:
+    """defender-001..003: Windows Defender operational channel detections."""
+    alerts = []
+
+    def defender_events(eid: int) -> list[dict]:
+        return [e for e in by_id.get(eid, []) if "defender" in _channel(e)]
+
+    rule = _rule("defender-001")
+    for eid in (1116, 1117):
+        for event in defender_events(eid):
+            alerts.append(_make_alert(
+                rule=rule, events=[event], computer=event["computer"],
+                user=event["user"], ip=None, count=1,
+                detail=(event.get("message") or "Malware detected")[:120],
+            ))
+
+    rule = _rule("defender-002")
+    for event in defender_events(5001):
+        alerts.append(_make_alert(
+            rule=rule, events=[event], computer=event["computer"],
+            user=event["user"], ip=None, count=1,
+            detail="Defender real-time protection disabled",
+        ))
+
+    rule = _rule("defender-003")
+    for eid in (5004, 5007, 5010, 5012):
+        for event in defender_events(eid):
+            alerts.append(_make_alert(
+                rule=rule, events=[event], computer=event["computer"],
+                user=event["user"], ip=None, count=1,
+                detail=f"Defender configuration changed (event {eid}): "
+                       f"{(event.get('message') or '')[:80]}",
+            ))
+
+    return alerts
+
+
+def _detect_system_service_rules(by_id: dict) -> list[dict]:
+    """system-001/002: security service tampering visible in the System log.
+
+    7034/7040 exist only in the System channel; events without channel
+    information (older exports) are accepted as well.
+    """
+    alerts = []
+
+    def system_events(eid: int) -> list[dict]:
+        return [e for e in by_id.get(eid, [])
+                if _channel(e) in ("", "system", "security")]
+
+    def service_name(event: dict) -> str:
+        raw = event.get("raw", {})
+        return (event.get("service_name") or raw.get("param1")
+                or raw.get("ServiceName") or "").lower()
+
+    rule = _rule("system-001")
+    for event in system_events(7040):
+        svc = service_name(event)
+        message = (event.get("message") or "").lower()
+        if any(s in svc or s in message for s in SECURITY_SERVICES):
+            alerts.append(_make_alert(
+                rule=rule, events=[event], computer=event["computer"],
+                user=event["user"], ip=None, count=1,
+                detail=f"Start type changed for security service: "
+                       f"{svc or message[:60] or 'unknown'}",
+            ))
+
+    rule = _rule("system-002")
+    for event in system_events(7034):
+        svc = service_name(event)
+        message = (event.get("message") or "").lower()
+        if any(s in svc or s in message for s in SECURITY_SERVICES):
+            alerts.append(_make_alert(
+                rule=rule, events=[event], computer=event["computer"],
+                user=event["user"], ip=None, count=1,
+                detail=f"Security service crashed: "
+                       f"{svc or message[:60] or 'unknown'}",
+            ))
+
+    return alerts
+
+
+# ---------------------------------------------------------------------------
+# Sigma rules (converted by sigma_loader)
+# ---------------------------------------------------------------------------
+
+def _detect_sigma_rules(by_id: dict, sigma_rules: list[dict]) -> list[dict]:
+    """Fire alerts for events matching converted Sigma rules.
+
+    Each rule carries a 'match' spec produced by sigma_loader:
+        {"event_ids": [...], "contains": {field: [values]},
+         "equals": {field: [values]}}
+    Field lookup checks the raw event fields first, then the normalised
+    schema. String matching is case-insensitive.
+    """
+    alerts = []
+    for rule in sigma_rules:
+        match = rule.get("match", {})
+        for eid in match.get("event_ids", []):
+            for event in by_id.get(eid, []):
+                if _sigma_event_matches(event, match):
+                    alerts.append(_make_alert(
+                        rule=rule, events=[event],
+                        computer=event["computer"],
+                        user=event["user"],
+                        ip=event.get("ip_address"),
+                        count=1,
+                        detail=f"Sigma rule matched: {rule['rule']}",
+                    ))
+    return alerts
+
+
+def _sigma_field(event: dict, field: str) -> str:
+    """Look up a Sigma field on an event (raw first, then normalised)."""
+    raw = event.get("raw", {})
+    value = raw.get(field)
+    if value is None:
+        value = event.get(field.lower())
+    return str(value) if value is not None else ""
+
+
+def _sigma_event_matches(event: dict, match: dict) -> bool:
+    for field, values in match.get("contains", {}).items():
+        actual = _sigma_field(event, field).lower()
+        if not any(str(v).lower() in actual for v in values):
+            return False
+    for field, values in match.get("equals", {}).items():
+        actual = _sigma_field(event, field).lower()
+        if not any(str(v).lower() == actual for v in values):
+            return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Allowlist suppression
+# ---------------------------------------------------------------------------
+
+def _apply_allowlist(alerts: list[dict]) -> list[dict]:
+    """Suppress alerts whose ip/user/computer is allowlisted in settings.
+
+    Suppressions are logged so tuning stays auditable.
+    """
+    if not (ALLOWLIST_IPS or ALLOWLIST_USERS or ALLOWLIST_COMPUTERS):
+        return alerts
+
+    ips = {ip.strip() for ip in ALLOWLIST_IPS}
+    users = {u.strip().lower() for u in ALLOWLIST_USERS}
+    computers = {c.strip().lower() for c in ALLOWLIST_COMPUTERS}
+
+    kept: list[dict] = []
+    suppressed = 0
+    for alert in alerts:
+        if (alert.get("ip") in ips
+                or (alert.get("user") or "").lower() in users
+                or (alert.get("computer") or "").lower() in computers):
+            suppressed += 1
+            logger.debug("Allowlist suppressed %s (%s/%s/%s)",
+                         alert["rule_id"], alert.get("ip"),
+                         alert.get("user"), alert.get("computer"))
+            continue
+        kept.append(alert)
+
+    if suppressed:
+        logger.info("Allowlist suppressed %d alert(s)", suppressed)
+    return kept
 
 
 # ---------------------------------------------------------------------------

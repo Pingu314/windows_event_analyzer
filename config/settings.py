@@ -196,6 +196,25 @@ WEIGHTS = {
     "event_log_stopped":             50,  # CRITICAL
     "unexpected_shutdown":           35,
     "boot_config_loaded":            40,  # CRITICAL
+
+    # Sysmon channel
+    "sysmon_suspicious_cmdline":     30,
+    "remote_thread_created":         35,
+    "lsass_access":                  50,  # CRITICAL
+    "sysmon_registry_autorun":       30,
+    "dns_suspicious_tld":            15,
+    "process_tampering":             35,
+    "startup_folder_file":           30,
+    "suspicious_net_connection":     20,
+
+    # Windows Defender channel
+    "defender_malware_detected":     40,
+    "defender_rtp_disabled":         50,  # CRITICAL
+    "defender_config_tampered":      35,
+
+    # System channel
+    "security_service_disabled":     35,
+    "security_service_crashed":      25,
 }
 
 # Maximum score (capped)
@@ -400,6 +419,7 @@ CSV_COLUMN_ALIASES = {
     "process_name": ["New Process Name", "ProcessName", "process_name"],
     "task_name":    ["Task Name", "TaskName", "task_name"],
     "service_name": ["Service Name", "ServiceName", "service_name"],
+    "channel":      ["Channel", "Log Name", "channel"],
 }
 
 # ---------------------------------------------------------------------------
@@ -569,6 +589,75 @@ SYSTEM_EVENT_IDS = {
     7040,  # Service start type changed
     7045,  # New service installed (also in Security 4697)
 }
+
+# ---------------------------------------------------------------------------
+# Sysmon / Defender / System channel rule inputs
+# ---------------------------------------------------------------------------
+
+# DNS TLDs disproportionately used by malware C2 / phishing (sysmon-005)
+SUSPICIOUS_TLDS = [
+    ".top", ".xyz", ".click", ".gq", ".tk", ".ml", ".cf", ".ga",
+    ".icu", ".cam", ".rest", ".onion",
+]
+
+# Destination ports associated with C2 frameworks / reverse shells (sysmon-008)
+SUSPICIOUS_PORTS = {4444, 1337, 6666, 6667, 9001, 31337}
+
+# Windows services whose stop/disable/crash indicates defence tampering
+SECURITY_SERVICES = [
+    "windefend", "wscsvc", "mpssvc", "eventlog", "sense",
+    "wdnissvc", "securityhealthservice", "sysmon", "sysmon64",
+]
+
+# Startup-folder path fragments (sysmon-007)
+STARTUP_FOLDER_PATTERNS = [
+    "\\start menu\\programs\\startup",
+    "\\startup\\",
+]
+
+# ---------------------------------------------------------------------------
+# Incident correlation
+# ---------------------------------------------------------------------------
+
+# Alerts sharing an entity (IP or user) within this window are grouped
+# into one incident
+INCIDENT_WINDOW_MINUTES = 30
+# Minimum alerts for a group to be reported as an incident
+INCIDENT_MIN_ALERTS = 2
+# Score bonus per additional attack category present in one incident
+INCIDENT_CATEGORY_BONUS = 5
+
+# ---------------------------------------------------------------------------
+# Alert allowlist (suppression)
+# ---------------------------------------------------------------------------
+
+# Alerts whose ip/user/computer matches an entry here are suppressed
+# (vulnerability scanners, backup accounts, jump hosts, ...).
+# Suppression is logged so it stays auditable.
+ALLOWLIST_IPS: list[str] = []
+ALLOWLIST_USERS: list[str] = []
+ALLOWLIST_COMPUTERS: list[str] = []
+
+# ---------------------------------------------------------------------------
+# Sigma rule loading
+# ---------------------------------------------------------------------------
+
+# Directory with Sigma YAML rules loaded in addition to built-in rules
+SIGMA_RULES_DIR = Path("rules") / "sigma"
+# Risk score per Sigma level for rules without built-in weights
+SIGMA_LEVEL_SCORES = {
+    "critical":      90,
+    "high":          60,
+    "medium":        35,
+    "low":           15,
+    "informational": 5,
+}
+
+# ---------------------------------------------------------------------------
+# Live capture
+# ---------------------------------------------------------------------------
+
+LIVE_MAX_EVENTS = 1000
 
 # Sensitive file paths - access triggers exec-007
 SENSITIVE_FILE_PATHS = [

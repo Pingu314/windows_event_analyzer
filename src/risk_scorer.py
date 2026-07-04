@@ -20,6 +20,7 @@ from config.settings import (
     SEVERITY_CRITICAL,
     SEVERITY_HIGH,
     SEVERITY_MEDIUM,
+    SIGMA_LEVEL_SCORES,
     WEIGHTS,
 )
 
@@ -136,6 +137,25 @@ _RULE_WEIGHT_MAP: dict[str, list[str]] = {
     "ad-003":      ["ad_object_deleted"],
     "ad-004":      ["ad_object_moved"],
     "ad-005":      ["ad_object_undeleted"],
+
+    # Sysmon channel
+    "sysmon-001":  ["sysmon_suspicious_cmdline"],
+    "sysmon-002":  ["remote_thread_created"],
+    "sysmon-003":  ["lsass_access"],
+    "sysmon-004":  ["sysmon_registry_autorun"],
+    "sysmon-005":  ["dns_suspicious_tld"],
+    "sysmon-006":  ["process_tampering"],
+    "sysmon-007":  ["startup_folder_file"],
+    "sysmon-008":  ["suspicious_net_connection"],
+
+    # Windows Defender channel
+    "defender-001": ["defender_malware_detected"],
+    "defender-002": ["defender_rtp_disabled"],
+    "defender-003": ["defender_config_tampered"],
+
+    # System channel
+    "system-001":  ["security_service_disabled"],
+    "system-002":  ["security_service_crashed"],
 }
 
 
@@ -177,6 +197,12 @@ def score(alert: dict) -> dict:
         if pts:
             breakdown[key] = pts
             total += pts
+
+    # Runtime-loaded Sigma rules have no weight entry - score by their level
+    if not weight_keys and rule_id.startswith("sigma-"):
+        pts = SIGMA_LEVEL_SCORES.get(sigma_severity, 25)
+        breakdown["sigma_level"] = pts
+        total += pts
 
     # Count bonus: each additional event beyond the first adds a small bonus
     if count > 1:
