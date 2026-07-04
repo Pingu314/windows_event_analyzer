@@ -1254,7 +1254,7 @@ def _detect_kerberoasting_rc4(by_id: dict) -> list[dict]:
                 ip=event.get("ip_address"),
                 count=1,
                 detail=f"Kerberos service ticket with RC4 encryption "
-                       f"(etype={etype}) — Kerberoasting indicator",
+                       f"(etype={etype}) - Kerberoasting indicator",
             ))
     return alerts
 
@@ -1346,7 +1346,7 @@ def _detect_ntlm_relay(by_id: dict) -> list[dict]:
                 ip=ip,
                 count=1,
                 detail=f"NTLM network logon to {computer} claiming its own "
-                       f"workstation name, from {ip} — relay-to-self indicator",
+                       f"workstation name, from {ip} - relay-to-self indicator",
             ))
     return alerts
 

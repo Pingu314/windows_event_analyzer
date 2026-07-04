@@ -107,7 +107,7 @@ class ReportGenerator:
             by_category[cat] = by_category.get(cat, 0) + 1
 
         print(f"\n{'='*60}")
-        print(f"  TRIAGE SUMMARY — {len(alerts)} alert(s)")
+        print(f"  TRIAGE SUMMARY - {len(alerts)} alert(s)")
         print(f"{'='*60}")
         print(f"  CRITICAL : {by_severity['CRITICAL']}")
         print(f"  HIGH     : {by_severity['HIGH']}")
