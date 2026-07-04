@@ -33,6 +33,7 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request
 
 from config.settings import APP_VERSION, SUPPORTED_LOG_EXTENSIONS
+from src.correlator import correlate, serialise_incident
 from src.enricher import AlertContextEnricher
 from src.main import run_pipeline, run_pipeline_multi
 
@@ -208,6 +209,17 @@ def alerts_summary() -> Response:
         )[:10],
         "tor_source_alerts":        tor_alerts,
         "high_risk_country_alerts": high_risk_country_alerts,
+    })
+
+
+@app.route("/incidents")
+def incidents() -> Response:
+    """Return correlated incidents from the cached sample-data alerts."""
+    data = _get_cached_alerts()
+    incident_list = correlate(data)
+    return jsonify({
+        "total_incidents": len(incident_list),
+        "incidents": [serialise_incident(i) for i in incident_list],
     })
 
 
