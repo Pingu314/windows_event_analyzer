@@ -42,7 +42,7 @@ import logging
 import re
 from collections import defaultdict
 from datetime import timedelta
-from pathlib import Path
+from pathlib import PureWindowsPath
 
 from config.settings import (
     BRUTE_FORCE_THRESHOLD,
@@ -912,8 +912,10 @@ def _detect_suspicious_process(by_id: dict) -> list[dict]:
 
     for event in by_id.get(4688, []):
         process = event.get("process_name", "") or ""
+        # PureWindowsPath: log paths are Windows paths even when this tool
+        # runs on Linux, where POSIX Path would not split on backslashes
         parent = event.get("raw", {}).get("ParentProcessName", "").lower()
-        parent_base = Path(parent).name if parent else ""
+        parent_base = PureWindowsPath(parent).name if parent else ""
 
         # exec-006: known malicious process name
         if any(mal in process for mal in SUSPICIOUS_PROCESSES):

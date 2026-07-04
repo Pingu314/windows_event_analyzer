@@ -32,7 +32,7 @@ import logging
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from config.settings import CSV_COLUMN_ALIASES, JSON_FIELD_ALIASES, SUPPORTED_CHANNELS
 
@@ -511,13 +511,17 @@ def _clean_ip(ip: str | None) -> str | None:
 
 
 def _clean_process(process: str | None) -> str | None:
-    """Normalise process name to lowercase basename."""
+    """Normalise process name to lowercase basename.
+
+    Uses PureWindowsPath: the logs contain Windows paths regardless of the
+    OS this tool runs on, and POSIX Path would not split on backslashes.
+    """
     if not process:
         return None
     process = process.strip().lower()
     if process in ("", "-", "n/a"):
         return None
-    return Path(process).name or process
+    return PureWindowsPath(process).name or process
 
 
 def _level_name(level_code: int) -> str:

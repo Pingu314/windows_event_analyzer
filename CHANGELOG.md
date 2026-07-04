@@ -3,6 +3,17 @@
 All notable changes to this project are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/).
+---
+
+## [0.10.1] - 2026-07-04
+
+### Fixed
+- Process basenames were not extracted from Windows paths when running on
+  Linux/macOS (POSIX `Path` does not split on backslashes) - parser and
+  parent-child detection now use `PureWindowsPath`. Caught by the Linux CI
+  matrix.
+
+---
 
 ## [0.10.0] - 2026-07-04
 
@@ -21,6 +32,8 @@ versioning follows [SemVer](https://semver.org/).
 ### Changed
 - `.gitignore` reorganised by category; curated `sample_*.json` logs are
   now tracked while raw exports stay ignored.
+
+---
 
 ## [0.9.0] - 2026-07-04
 
@@ -53,3 +66,4 @@ versioning follows [SemVer](https://semver.org/).
 - Privileged group changes mapped to MITRE T1098.001 (cloud credentials);
   corrected to T1098.007 (Additional Local or Domain Groups).
 - ipinfo.io token moved from URL query string to Authorization header.
+---
