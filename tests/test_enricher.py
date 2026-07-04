@@ -390,3 +390,41 @@ def test_orchestrator_includes_new_intel_keys():
     alerts = AlertContextEnricher().enrich_alerts([_sample_alert(ip="10.0.0.1")])
     assert "vt_intel" in alerts[0]
     assert "greynoise_intel" in alerts[0]
+
+
+# ---------------------------------------------------------------------------
+# GreyNoise unauthenticated community mode
+# ---------------------------------------------------------------------------
+
+
+def test_greynoise_unauthenticated_mode_queries_without_key(monkeypatch):
+    seen_headers = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen_headers.update(req.headers)
+        return _FakeResponse({"classification": "benign", "noise": True,
+                              "riot": True, "name": "GoogleBot"})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    enricher = GreyNoiseEnricher(allow_unauthenticated=True)
+    result = enricher.get_classification("8.8.8.8")
+    assert result["classification"] == "benign"
+    assert "Key" not in seen_headers            # no auth header sent
+
+
+def test_greynoise_token_still_sends_key_header(monkeypatch):
+    seen_headers = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen_headers.update(req.headers)
+        return _FakeResponse({"classification": "malicious"})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    GreyNoiseEnricher(token="secret").get_classification("8.8.8.8")
+    assert seen_headers.get("Key") == "secret"
+
+
+def test_greynoise_disabled_without_token_or_optin():
+    enricher = GreyNoiseEnricher()   # conftest blanks token + community flag
+    result = enricher.get_classification("8.8.8.8")
+    assert result["classification"] is None

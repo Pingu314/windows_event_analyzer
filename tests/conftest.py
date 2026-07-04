@@ -22,6 +22,7 @@ def _no_api_tokens(monkeypatch):
     monkeypatch.setattr("src.enricher._ABUSEIPDB_TOKEN", "")
     monkeypatch.setattr("src.enricher._VIRUSTOTAL_TOKEN", "")
     monkeypatch.setattr("src.enricher._GREYNOISE_TOKEN", "")
+    monkeypatch.setattr("src.enricher._GREYNOISE_COMMUNITY", False)
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +41,7 @@ def make_event(
     task_name: str | None = None,
     service_name: str | None = None,
     message: str = "",
+    channel: str = "Security",
     raw: dict | None = None,
 ) -> dict:
     """Build a normalised event dict for testing."""
@@ -56,6 +58,7 @@ def make_event(
         "process_name": process_name,
         "task_name":    task_name,
         "service_name": service_name,
+        "channel":      channel,
         "raw":          raw or {},
     }
 

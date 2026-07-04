@@ -25,10 +25,10 @@ def rule_ids(alerts):
 # ---------------------------------------------------------------------------
 
 
-def test_rule_registry_has_94_unique_rules():
+def test_rule_registry_has_107_unique_rules():
     ids = [r["rule_id"] for r in RULES]
-    assert len(ids) == 94
-    assert len(set(ids)) == 94
+    assert len(ids) == 107
+    assert len(set(ids)) == 107
 
 
 def test_no_events_no_alerts():
@@ -477,3 +477,148 @@ def test_scheduled_task_without_name_uses_raw_fallback():
 def test_service_account_logon_without_user_skipped():
     alerts = run_all_detections([make_event(4624, logon_type=2, user=None)])
     assert "logon-007" not in rule_ids(alerts)
+
+
+# ---------------------------------------------------------------------------
+# Sysmon / Defender / System channel rules
+# ---------------------------------------------------------------------------
+
+SYSMON = "Microsoft-Windows-Sysmon/Operational"
+DEFENDER = "Microsoft-Windows-Windows Defender/Operational"
+
+
+def test_sysmon_suspicious_cmdline():
+    event = make_event(1, channel=SYSMON,
+                       raw={"CommandLine": "powershell -enc SQBFAFgA"})
+    assert "sysmon-001" in rule_ids(run_all_detections([event]))
+
+
+def test_sysmon_rules_require_sysmon_channel():
+    # Same event ID from a non-Sysmon channel must not fire
+    event = make_event(1, channel="Security",
+                       raw={"CommandLine": "powershell -enc SQBFAFgA"})
+    ids = rule_ids(run_all_detections([event]))
+    assert not any(r.startswith("sysmon-") for r in ids)
+
+
+def test_sysmon_remote_thread_and_tampering():
+    events = [
+        make_event(8, channel=SYSMON,
+                   raw={"SourceImage": "C:\\evil.exe",
+                        "TargetImage": "C:\\Windows\\explorer.exe"}),
+        make_event(25, channel=SYSMON, raw={"Image": "C:\\hollowed.exe"}),
+    ]
+    ids = rule_ids(run_all_detections(events))
+    assert "sysmon-002" in ids
+    assert "sysmon-006" in ids
+
+
+def test_sysmon_lsass_access_is_critical():
+    event = make_event(10, channel=SYSMON,
+                       raw={"SourceImage": "C:\\tools\\procdump.exe",
+                            "TargetImage": "C:\\Windows\\System32\\lsass.exe"})
+    alerts = run_all_detections([event])
+    lsass = next(a for a in alerts if a["rule_id"] == "sysmon-003")
+    assert lsass["sigma_severity"] == "critical"
+
+
+def test_sysmon_lsass_rule_ignores_other_targets():
+    event = make_event(10, channel=SYSMON,
+                       raw={"TargetImage": "C:\\Windows\\notepad.exe"})
+    assert "sysmon-003" not in rule_ids(run_all_detections([event]))
+
+
+def test_sysmon_registry_autorun_and_startup_folder():
+    events = [
+        make_event(13, channel=SYSMON,
+                   raw={"TargetObject":
+                        "HKLM\\Software\\Microsoft\\Windows\\"
+                        "CurrentVersion\\Run\\evil"}),
+        make_event(11, channel=SYSMON,
+                   raw={"TargetFilename":
+                        "C:\\Users\\x\\AppData\\Roaming\\Microsoft\\Windows\\"
+                        "Start Menu\\Programs\\Startup\\evil.lnk"}),
+    ]
+    ids = rule_ids(run_all_detections(events))
+    assert "sysmon-004" in ids
+    assert "sysmon-007" in ids
+
+
+def test_sysmon_dns_suspicious_tld():
+    hit = make_event(22, channel=SYSMON, raw={"QueryName": "cdn-update.top"})
+    miss = make_event(22, channel=SYSMON, raw={"QueryName": "microsoft.com"})
+    ids = rule_ids(run_all_detections([hit, miss]))
+    assert ids.count("sysmon-005") == 1
+
+
+def test_sysmon_network_connection_c2_port():
+    event = make_event(3, channel=SYSMON,
+                       raw={"Image": "C:\\Users\\x\\update.exe",
+                            "DestinationIp": "9.9.9.9",
+                            "DestinationPort": "4444"})
+    assert "sysmon-008" in rule_ids(run_all_detections([event]))
+
+
+def test_defender_malware_and_rtp_disabled():
+    events = [
+        make_event(1116, channel=DEFENDER,
+                   message="Defender detected HackTool:Win64/Mikatz"),
+        make_event(5001, channel=DEFENDER),
+    ]
+    alerts = run_all_detections(events)
+    ids = rule_ids(alerts)
+    assert "defender-001" in ids
+    rtp = next(a for a in alerts if a["rule_id"] == "defender-002")
+    assert rtp["sigma_severity"] == "critical"
+
+
+def test_defender_config_tampered():
+    event = make_event(5007, channel=DEFENDER, message="Config changed")
+    assert "defender-003" in rule_ids(run_all_detections([event]))
+
+
+def test_defender_rules_require_defender_channel():
+    event = make_event(1116, channel="Security")
+    ids = rule_ids(run_all_detections([event]))
+    assert not any(r.startswith("defender-") for r in ids)
+
+
+def test_system_security_service_disabled_and_crashed():
+    events = [
+        make_event(7040, channel="System", service_name="WinDefend",
+                   message="Windows Defender service changed to disabled"),
+        make_event(7034, channel="System",
+                   message="The Sysmon64 service terminated unexpectedly"),
+    ]
+    ids = rule_ids(run_all_detections(events))
+    assert "system-001" in ids
+    assert "system-002" in ids
+
+
+def test_system_rules_ignore_ordinary_services():
+    event = make_event(7034, channel="System",
+                       message="The Print Spooler service terminated")
+    assert "system-002" not in rule_ids(run_all_detections([event]))
+
+
+# ---------------------------------------------------------------------------
+# Allowlist suppression
+# ---------------------------------------------------------------------------
+
+
+def test_allowlist_suppresses_matching_ip(monkeypatch):
+    monkeypatch.setattr("src.detector.ALLOWLIST_IPS", ["10.99.99.99"])
+    events = make_events(4625, count=5, ip_address="10.99.99.99", user="scanner")
+    assert run_all_detections(events) == []
+
+
+def test_allowlist_suppresses_matching_user(monkeypatch):
+    monkeypatch.setattr("src.detector.ALLOWLIST_USERS", ["JSmith"])
+    alerts = run_all_detections([make_event(4720, user="jsmith")])
+    assert alerts == []
+
+
+def test_allowlist_keeps_non_matching(monkeypatch):
+    monkeypatch.setattr("src.detector.ALLOWLIST_IPS", ["10.99.99.99"])
+    events = make_events(4625, count=5, ip_address="1.2.3.4", user="admin")
+    assert "brute-001" in rule_ids(run_all_detections(events))

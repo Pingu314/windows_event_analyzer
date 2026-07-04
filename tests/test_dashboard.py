@@ -186,3 +186,14 @@ def test_analyze_corrupt_file_returns_500(client):
     )
     assert resp.status_code == 500
     assert "error" in resp.get_json()
+
+
+def test_incidents_endpoint(client):
+    resp = client.get("/incidents")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["total_incidents"] == len(body["incidents"])
+    for incident in body["incidents"]:
+        assert incident["incident_id"].startswith("INC-")
+        assert "alerts" not in incident        # payloads stripped
+        assert incident["alert_count"] >= 2

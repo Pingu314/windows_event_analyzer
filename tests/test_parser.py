@@ -16,6 +16,7 @@ from src.parser import (
     _parse_timestamp_evtx,
     _parse_timestamp_jsonl,
     parse,
+    parse_live,
     parse_many,
 )
 
@@ -351,3 +352,88 @@ def test_parse_jsonl_non_numeric_event_id_skipped(tmp_path):
     events = parse(path)
     assert len(events) == 1
     assert events[0]["logon_type"] is None
+
+
+# ---------------------------------------------------------------------------
+# Channel field
+# ---------------------------------------------------------------------------
+
+
+def test_channel_field_from_jsonl(sample_jsonl_path):
+    events = parse(sample_jsonl_path)
+    assert all(e["channel"] == "Security" for e in events)
+
+
+def test_channel_field_defaults_for_csv(sample_csv_path):
+    events = parse(sample_csv_path)
+    assert all(e["channel"] == "Security" for e in events)
+
+
+def test_channel_field_from_jsonl_sysmon(tmp_path):
+    path = tmp_path / "sysmon.json"
+    path.write_text(
+        '{"EventID": 1, "EventTime": "2026-01-15 09:00:00", '
+        '"Channel": "Microsoft-Windows-Sysmon/Operational", "Hostname": "ws01"}\n'
+    )
+    events = parse(path)
+    assert events[0]["channel"] == "Microsoft-Windows-Sysmon/Operational"
+
+
+# ---------------------------------------------------------------------------
+# Live capture (mocked wevtutil)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_live_rejects_non_windows(monkeypatch):
+    import src.parser as parser_mod
+    monkeypatch.setattr(parser_mod.platform, "system", lambda: "Linux")
+    with pytest.raises(RuntimeError, match="only works on Windows"):
+        parse_live()
+
+
+def test_parse_live_parses_wevtutil_output(monkeypatch):
+
+    import src.parser as parser_mod
+
+    monkeypatch.setattr(parser_mod.platform, "system", lambda: "Windows")
+
+    class _Proc:
+        stdout = _EVTX_XML + "\n" + _EVTX_XML.replace("4625", "4624")
+
+    def fake_run(cmd, **kwargs):
+        assert cmd[0] == "wevtutil"
+        assert "Security" in cmd
+        return _Proc()
+
+    monkeypatch.setattr(parser_mod.subprocess, "run", fake_run)
+    events = parse_live(channel="Security", max_events=10)
+    assert len(events) == 2
+    assert {e["event_id"] for e in events} == {4624, 4625}
+
+
+def test_parse_live_wevtutil_failure(monkeypatch):
+    import subprocess
+
+    import src.parser as parser_mod
+
+    monkeypatch.setattr(parser_mod.platform, "system", lambda: "Windows")
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.CalledProcessError(5, cmd, stderr="Access is denied.")
+
+    monkeypatch.setattr(parser_mod.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="Administrator"):
+        parse_live()
+
+
+def test_parse_live_wevtutil_missing(monkeypatch):
+    import src.parser as parser_mod
+
+    monkeypatch.setattr(parser_mod.platform, "system", lambda: "Windows")
+
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("wevtutil")
+
+    monkeypatch.setattr(parser_mod.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="not found"):
+        parse_live()

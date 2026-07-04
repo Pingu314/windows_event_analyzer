@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import json
+from pathlib import Path
 
 from config.settings import REPORT_CSV_FIELDNAMES
 from src.report_generator import ReportGenerator
@@ -60,6 +61,64 @@ def test_print_summary(capsys, sample_alerts):
 def test_print_summary_no_alerts(capsys):
     ReportGenerator().print_summary([])
     assert "No alerts detected." in capsys.readouterr().out
+
+
+def test_export_json_includes_incidents(tmp_path, sample_alerts):
+    from src.correlator import correlate
+
+    incidents = correlate(sample_alerts)
+    reporter = ReportGenerator(report_dir=tmp_path)
+    path = reporter.export(sample_alerts, incidents=incidents)
+
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    assert data["meta"]["total_incidents"] == len(incidents)
+    assert len(data["incidents"]) == len(incidents)
+    for incident in data["incidents"]:
+        assert incident["incident_id"].startswith("INC-")
+
+
+def test_print_summary_shows_incidents(capsys, sample_alerts):
+    from src.correlator import correlate
+
+    incidents = correlate(sample_alerts)
+    ReportGenerator().print_summary(sample_alerts, incidents=incidents)
+    out = capsys.readouterr().out
+    if incidents:
+        assert "INCIDENTS" in out
+        assert "INC-001" in out
+
+
+def test_export_html(tmp_path, sample_alerts):
+    from src.correlator import correlate
+
+    incidents = correlate(sample_alerts)
+    reporter = ReportGenerator(report_dir=tmp_path)
+    path = reporter.export_html(sample_alerts, incidents=incidents,
+                                source_path="unit-test.csv")
+
+    content = Path(path).read_text(encoding="utf-8")
+    assert content.startswith("<!DOCTYPE html>")
+    assert "Triage Report" in content
+    assert "unit-test.csv" in content
+    assert "CRITICAL" in content                 # severity tiles + chips
+    assert "Alerts by category" in content
+    for alert in sample_alerts[:3]:
+        assert alert["rule_id"] in content
+
+
+def test_export_html_escapes_content(tmp_path):
+    alert = {
+        "rule_id": "x-001", "rule": "<script>alert(1)</script>",
+        "category": "Test", "detail": "<img src=x onerror=alert(1)>",
+        "computer": "ws01", "user": None, "ip": None,
+        "risk": {"severity": "LOW", "score": 5}, "events": [],
+    }
+    reporter = ReportGenerator(report_dir=tmp_path)
+    content = Path(reporter.export_html([alert])).read_text(encoding="utf-8")
+    assert "<script>alert(1)</script>" not in content
+    assert "&lt;script&gt;" in content
 
 
 def test_print_summary_flags_tor_and_high_risk(capsys, sample_alerts):

@@ -153,3 +153,121 @@ def test_main_export_failure_is_reported(sample_csv_path, tmp_path,
     ])
     main()
     assert "Could not write JSON report" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# New flags: --min-severity, --html, --live, sigma
+# ---------------------------------------------------------------------------
+
+
+def test_main_min_severity_filters_output(sample_csv_path, tmp_path,
+                                          monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [
+        "evtx-analyze", str(sample_csv_path),
+        "--min-severity", "critical",       # case-insensitive
+        "--output", str(tmp_path / "out"), "--no-export",
+    ])
+    main()
+    out = capsys.readouterr().out
+    assert "HIGH     : 0" in out
+    assert "MEDIUM   : 0" in out
+    assert "LOW      : 0" in out
+
+
+def test_main_html_export(sample_csv_path, tmp_path, monkeypatch, capsys):
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", [
+        "evtx-analyze", str(sample_csv_path),
+        "--output", str(out_dir), "--html",
+    ])
+    main()
+    assert "HTML report" in capsys.readouterr().out
+    html_files = list(out_dir.glob("report_*.html"))
+    assert len(html_files) == 1
+    content = html_files[0].read_text(encoding="utf-8")
+    assert "Triage Report" in content
+
+
+def test_main_live_mode(tmp_path, monkeypatch, capsys):
+    import src.main as main_mod
+    from tests.conftest import make_event
+
+    events = [make_event(1102, user="attacker")]
+    monkeypatch.setattr(main_mod, "parse_live",
+                        lambda channel, max_events: events)
+    monkeypatch.setattr(sys, "argv", [
+        "evtx-analyze", "--live", "--live-channel", "Security",
+        "--output", str(tmp_path / "out"), "--no-export",
+    ])
+    main()
+    out = capsys.readouterr().out
+    assert "Audit Log Cleared" in out
+
+
+def test_main_live_mode_failure_exits(tmp_path, monkeypatch, capsys):
+    import src.main as main_mod
+
+    def boom(channel, max_events):
+        raise RuntimeError("only works on Windows")
+
+    monkeypatch.setattr(main_mod, "parse_live", boom)
+    monkeypatch.setattr(sys, "argv", ["evtx-analyze", "--live"])
+    with pytest.raises(SystemExit):
+        main()
+    assert "Live capture failed" in capsys.readouterr().out
+
+
+def test_main_sigma_rules_fire(tmp_path, monkeypatch, capsys):
+    # a CSV with a CommandLine column so the bundled wevtutil rule matches
+    log = tmp_path / "cmd.csv"
+    log.write_text(
+        "Event ID,Date and Time,Computer,User,CommandLine\n"
+        "4688,01/15/2026 09:00:00,ws01,attacker,wevtutil cl Security\n"
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "evtx-analyze", str(log),
+        "--output", str(tmp_path / "out"), "--no-export",
+    ])
+    main()
+    assert "Event Log Cleared via wevtutil" in capsys.readouterr().out
+
+
+def test_main_no_sigma_disables_rules(tmp_path, monkeypatch, capsys):
+    log = tmp_path / "cmd.csv"
+    log.write_text(
+        "Event ID,Date and Time,Computer,User,CommandLine\n"
+        "4688,01/15/2026 09:00:00,ws01,attacker,wevtutil cl Security\n"
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "evtx-analyze", str(log), "--no-sigma",
+        "--output", str(tmp_path / "out"), "--no-export",
+    ])
+    main()
+    assert "Event Log Cleared via wevtutil" not in capsys.readouterr().out
+
+
+def _attack_csv(path):
+    rows = "\n".join(
+        f"4625,01/15/2026 09:00:{i:02d},ws01,admin,3,185.220.101.9"
+        for i in range(5)
+    )
+    path.write_text(
+        "Event ID,Date and Time,Computer,User,Logon Type,"
+        "Source Network Address\n"
+        + rows + "\n"
+        + "1102,01/15/2026 09:05:00,ws01,admin,,\n"
+    )
+    return path
+
+
+def test_main_prints_incidents(tmp_path, monkeypatch, capsys):
+    log = _attack_csv(tmp_path / "attack.csv")
+    monkeypatch.setattr(sys, "argv", [
+        "evtx-analyze", str(log),
+        "--output", str(tmp_path / "out"), "--no-export",
+    ])
+    main()
+    out = capsys.readouterr().out
+    # brute force + log clear share user 'admin' -> one incident
+    assert "INCIDENTS" in out
+    assert "INC-001" in out
