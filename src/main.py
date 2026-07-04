@@ -25,16 +25,25 @@ from config.settings import (
     DEFAULT_OUTPUT_DIR,
     LATERAL_THRESHOLD,
     LATERAL_WINDOW_MINUTES,
+    LIVE_MAX_EVENTS,
+    SIGMA_RULES_DIR,
     SPRAY_THRESHOLD,
     SPRAY_WINDOW_MINUTES,
 )
 from config.settings import SUPPORTED_LOG_EXTENSIONS as SUPPORTED_EXTENSIONS
+from src.correlator import correlate
 from src.detector import run_all_detections
 from src.enricher import AlertContextEnricher
 from src.mitre_mapper import map_many
-from src.parser import parse, parse_many
+from src.parser import parse, parse_live, parse_many
 from src.report_generator import ReportGenerator
-from src.risk_scorer import score_all
+from src.risk_scorer import get_severity, score_all
+from src.sigma_loader import load_sigma_rules
+
+# Bundled Sigma rules live next to the package, not in the caller's cwd
+_BUNDLED_SIGMA_DIR = Path(__file__).resolve().parent.parent / SIGMA_RULES_DIR
+
+_SEVERITY_ORDER = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,8 +52,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_pipeline(
-    log_path: str | Path,
+def analyze_events(
+    events: list[dict],
     brute_force_threshold: int | None = None,
     brute_force_window: int | None = None,
     spray_threshold: int | None = None,
@@ -52,23 +61,27 @@ def run_pipeline(
     lateral_threshold: int | None = None,
     lateral_window: int | None = None,
     enricher: AlertContextEnricher | None = None,
+    sigma_rules: list[dict] | None = None,
 ) -> list[dict]:
-    """Run the full detection pipeline on a single log file.
+    """Detect → score → enrich → MITRE-map a normalised event list.
+
+    Shared core used by file analysis (run_pipeline*), live capture
+    (--live) and the dashboard.
 
     Args:
-        log_path: Path to .evtx, .csv or .json file.
+        events: Normalised event dicts from parser.parse()/parse_live().
         brute_force_threshold: Override default brute force threshold.
         brute_force_window: Override default brute force window (minutes).
         spray_threshold: Override default password spray threshold.
         spray_window: Override default spray window (minutes).
         lateral_threshold: Override default lateral movement threshold.
         lateral_window: Override default lateral movement window (minutes).
-        enricher: Optional pre-instantiated AlertContextEnricher (reused across batch).
+        enricher: Optional pre-instantiated AlertContextEnricher.
+        sigma_rules: Optional converted Sigma rules (sigma_loader).
 
     Returns:
         List of enriched, scored, MITRE-tagged alert dicts.
     """
-
     kwargs = {
         "brute_force_threshold": brute_force_threshold or BRUTE_FORCE_THRESHOLD,
         "brute_force_window":    brute_force_window or BRUTE_FORCE_WINDOW_MINUTES,
@@ -78,11 +91,7 @@ def run_pipeline(
         "lateral_window":        lateral_window or LATERAL_WINDOW_MINUTES,
     }
 
-    logger.info("Log file: %s", log_path)
-    events = parse(str(log_path))
-    logger.info("Parsed %d events.", len(events))
-
-    alerts = run_all_detections(events, **kwargs)
+    alerts = run_all_detections(events, sigma_rules=sigma_rules, **kwargs)
     alerts = score_all(alerts)
     if enricher:
         alerts = enricher.enrich_alerts(alerts)
@@ -91,15 +100,35 @@ def run_pipeline(
     return alerts
 
 
+def run_pipeline(
+    log_path: str | Path,
+    enricher: AlertContextEnricher | None = None,
+    sigma_rules: list[dict] | None = None,
+    **threshold_overrides: int | None,
+) -> list[dict]:
+    """Run the full detection pipeline on a single log file.
+
+    Args:
+        log_path: Path to .evtx, .csv or .json file.
+        enricher: Optional pre-instantiated AlertContextEnricher.
+        sigma_rules: Optional converted Sigma rules.
+        **threshold_overrides: See analyze_events().
+
+    Returns:
+        List of enriched, scored, MITRE-tagged alert dicts.
+    """
+    logger.info("Log file: %s", log_path)
+    events = parse(str(log_path))
+    logger.info("Parsed %d events.", len(events))
+    return analyze_events(events, enricher=enricher,
+                          sigma_rules=sigma_rules, **threshold_overrides)
+
+
 def run_pipeline_multi(
     log_paths: list[str | Path],
-    brute_force_threshold: int | None = None,
-    brute_force_window: int | None = None,
-    spray_threshold: int | None = None,
-    spray_window: int | None = None,
-    lateral_threshold: int | None = None,
-    lateral_window: int | None = None,
     enricher: AlertContextEnricher | None = None,
+    sigma_rules: list[dict] | None = None,
+    **threshold_overrides: int | None,
 ) -> list[dict]:
     """Run the pipeline across multiple log files with merged event stream.
 
@@ -108,31 +137,16 @@ def run_pipeline_multi(
     Args:
         log_paths: List of .evtx, .csv or .json paths.
         enricher: Optional pre-instantiated AlertContextEnricher.
-        (other args same as run_pipeline)
+        sigma_rules: Optional converted Sigma rules.
+        **threshold_overrides: See analyze_events().
 
     Returns:
         List of enriched, scored, MITRE-tagged alert dicts.
     """
-
-    resolved = {
-        "brute_force_threshold": brute_force_threshold or BRUTE_FORCE_THRESHOLD,
-        "brute_force_window":    brute_force_window or BRUTE_FORCE_WINDOW_MINUTES,
-        "spray_threshold":       spray_threshold or SPRAY_THRESHOLD,
-        "spray_window":          spray_window or SPRAY_WINDOW_MINUTES,
-        "lateral_threshold":     lateral_threshold or LATERAL_THRESHOLD,
-        "lateral_window":        lateral_window or LATERAL_WINDOW_MINUTES,
-    }
-
     events = parse_many([str(p) for p in log_paths])
     logger.info("Total: %d events across %d file(s).", len(events), len(log_paths))
-
-    alerts = run_all_detections(events, **resolved)
-    alerts = score_all(alerts)
-    if enricher:
-        alerts = enricher.enrich_alerts(alerts)
-    alerts = map_many(alerts)
-    logger.info("Detected %d alert(s).", len(alerts))
-    return alerts
+    return analyze_events(events, enricher=enricher,
+                          sigma_rules=sigma_rules, **threshold_overrides)
 
 
 def collect_log_files(path: str | Path) -> list[Path]:
@@ -268,18 +282,66 @@ Examples:
                             help="Lateral movement distinct target threshold")
     thresholds.add_argument("--lateral-window", type=int, default=None,
                             help="Lateral movement time window (minutes)")
+
+    live = p.add_argument_group("live capture (Windows, elevated shell)")
+    live.add_argument("--live", action="store_true",
+                      help="Read the local event log via wevtutil instead "
+                           "of files")
+    live.add_argument("--live-channel", default="Security",
+                      help="Event log channel for --live")
+    live.add_argument("--live-max", type=int, default=LIVE_MAX_EVENTS,
+                      help="Newest N events to read with --live")
+
+    p.add_argument(
+        "--min-severity", default=None,
+        choices=["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+        type=str.upper,
+        help="Drop alerts below this severity from output and exports",
+    )
+    p.add_argument(
+        "--html", action="store_true",
+        help="Also export a self-contained HTML report",
+    )
+
+    sigma = p.add_argument_group("Sigma rules")
+    sigma.add_argument("--sigma-rules", default=None,
+                       help="Directory or file with Sigma YAML rules "
+                            "(default: bundled rules/sigma)")
+    sigma.add_argument("--no-sigma", action="store_true",
+                       help="Disable Sigma rule loading")
     return p
+
+
+def _resolve_sigma_rules(args: argparse.Namespace) -> list[dict] | None:
+    """Load Sigma rules per CLI flags (bundled rules by default)."""
+    if args.no_sigma:
+        return None
+    if args.sigma_rules:
+        return load_sigma_rules(args.sigma_rules)
+    if _BUNDLED_SIGMA_DIR.is_dir():
+        return load_sigma_rules(_BUNDLED_SIGMA_DIR)
+    return None
+
+
+def _filter_min_severity(alerts: list[dict], min_severity: str | None) -> list[dict]:
+    """Drop alerts below the requested severity."""
+    if not min_severity:
+        return alerts
+    floor = _SEVERITY_ORDER[min_severity]
+    kept = [
+        a for a in alerts
+        if _SEVERITY_ORDER.get(
+            a.get("risk", {}).get("severity")
+            or get_severity(a.get("risk", {}).get("score", 0)), 1) >= floor
+    ]
+    logger.info("Severity filter %s: kept %d of %d alert(s)",
+                min_severity, len(kept), len(alerts))
+    return kept
 
 
 def main() -> None:
     """CLI entrypoint for evtx-analyze."""
     args = _build_arg_parser().parse_args()
-
-    all_files = _resolve_inputs(args)
-
-    if not all_files:
-        _build_arg_parser().print_help()
-        sys.exit(1)
 
     override_kwargs: dict = {
         "brute_force_threshold": args.brute_threshold,
@@ -291,22 +353,44 @@ def main() -> None:
     }
 
     enricher = AlertContextEnricher()
+    sigma_rules = _resolve_sigma_rules(args)
 
-    if len(all_files) == 1:
-        alerts = run_pipeline(
-            all_files[0], enricher=enricher, **override_kwargs)
+    if args.live:
+        try:
+            events = parse_live(channel=args.live_channel,
+                                max_events=args.live_max)
+        except RuntimeError as e:
+            print(f"[!] Live capture failed: {e}")
+            sys.exit(2)
+        alerts = analyze_events(events, enricher=enricher,
+                                sigma_rules=sigma_rules, **override_kwargs)
     else:
-        logger.info(
-            "Processing %d file(s) with cross-file correlation.", len(all_files))
-        alerts = run_pipeline_multi(
-            all_files, enricher=enricher, **override_kwargs)
+        all_files = _resolve_inputs(args)
+        if not all_files:
+            _build_arg_parser().print_help()
+            sys.exit(1)
+
+        if len(all_files) == 1:
+            alerts = run_pipeline(
+                all_files[0], enricher=enricher,
+                sigma_rules=sigma_rules, **override_kwargs)
+        else:
+            logger.info(
+                "Processing %d file(s) with cross-file correlation.",
+                len(all_files))
+            alerts = run_pipeline_multi(
+                all_files, enricher=enricher,
+                sigma_rules=sigma_rules, **override_kwargs)
+
+    alerts = _filter_min_severity(alerts, args.min_severity)
+    incidents = correlate(alerts)
 
     reporter = ReportGenerator(report_dir=args.output)
-    reporter.print_summary(alerts)
+    reporter.print_summary(alerts, incidents=incidents)
 
     if not args.no_export and alerts:
         try:
-            json_path = reporter.export(alerts)
+            json_path = reporter.export(alerts, incidents=incidents)
             print(f"\n[+] JSON report: {json_path}")
         except OSError as e:
             print(f"[!] Could not write JSON report: {e}")
@@ -317,6 +401,13 @@ def main() -> None:
                 print(f"[+] CSV report:  {csv_path}")
             except OSError as e:
                 print(f"[!] Could not write CSV report: {e}")
+
+        if args.html:
+            try:
+                html_path = reporter.export_html(alerts, incidents=incidents)
+                print(f"[+] HTML report: {html_path}")
+            except OSError as e:
+                print(f"[!] Could not write HTML report: {e}")
 
 
 if __name__ == "__main__":
