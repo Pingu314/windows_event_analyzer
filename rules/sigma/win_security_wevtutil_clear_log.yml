@@ -1,0 +1,24 @@
+title: Event Log Cleared via wevtutil
+id: d1f2ab63-6c9e-4a4f-9c3b-0a1e5f7b2c01
+status: stable
+description: Detects use of wevtutil to clear an event log - classic anti-forensics.
+references:
+  - https://attack.mitre.org/techniques/T1070/001/
+author: windows-event-analyzer
+level: high
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4688
+    CommandLine|contains:
+      - 'wevtutil cl'
+      - 'wevtutil.exe cl'
+      - 'clear-eventlog'
+  condition: selection
+tags:
+  - attack.defense_evasion
+  - attack.t1070.001
+falsepositives:
+  - Administrators clearing logs during maintenance

@@ -1,0 +1,25 @@
+title: Successful ANONYMOUS LOGON
+id: a3b8f2d4-5e6c-4d7a-9b1c-8f0e2d4c6a03
+status: stable
+description: >
+  Detects successful network logons by the ANONYMOUS LOGON account -
+  associated with NTLM relay, null-session enumeration and legacy
+  protocol abuse.
+references:
+  - https://attack.mitre.org/techniques/T1078/
+author: windows-event-analyzer
+level: medium
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4624
+    TargetUserName|contains:
+      - 'ANONYMOUS LOGON'
+  condition: selection
+tags:
+  - attack.initial_access
+  - attack.t1078
+falsepositives:
+  - Legacy applications using null sessions by design

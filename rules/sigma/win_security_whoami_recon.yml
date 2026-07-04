@@ -1,0 +1,24 @@
+title: Whoami Execution (Situational Awareness)
+id: e7c1442e-0f4a-4b6a-8f2a-3b9d6c5e8a02
+status: stable
+description: >
+  Detects whoami.exe execution - attackers routinely run it right after
+  gaining access to identify the compromised account and its privileges.
+references:
+  - https://attack.mitre.org/techniques/T1033/
+author: windows-event-analyzer
+level: low
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4688
+    CommandLine|contains:
+      - 'whoami'
+  condition: selection
+tags:
+  - attack.discovery
+  - attack.t1033
+falsepositives:
+  - Administrators and scripts checking the current user context
