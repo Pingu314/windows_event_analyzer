@@ -307,6 +307,7 @@ def _parse_csv_row(row: dict, col_map: dict[str, str]) -> dict | None:
         "raw":          dict(row),
     }
 
+
 # ---------------------------------------------------------------------------
 # JSON parser
 # ---------------------------------------------------------------------------
@@ -396,6 +397,7 @@ def _parse_jsonl_record(obj: dict) -> dict | None:
         "service_name": obj.get("ServiceName"),
         "raw":          obj,
     }
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -499,10 +501,11 @@ def _clean_ip(ip: str | None) -> str | None:
     ip = ip.strip()
     if ip in ("", "-", "::1", "127.0.0.1", "n/a"):
         return None
-    # Strip port if present (e.g. 192.168.1.1:4444)
-    if ":" in ip and not ip.startswith("::"):
+    # Strip port from IPv4 only (e.g. 192.168.1.1:4444). IPv6 groups are
+    # colon-separated, so a single rsplit would mangle them.
+    if ip.count(":") == 1:
         parts = ip.rsplit(":", 1)
-        if len(parts) == 2 and parts[1].isdigit():
+        if parts[1].isdigit():
             ip = parts[0]
     return ip or None
 

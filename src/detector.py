@@ -560,9 +560,10 @@ def _detect_multi_id_rules(by_id: dict) -> list[dict]:
     alerts = []
     multi_rules = [
         ([4723, 4724], "acct-009"),
-        ([4697, 7045], "persist-005"),
         ([5027, 5028], "evasion-012"),
     ]
+    # 4697/7045 (persist-005) are handled by _detect_suspicious_service_install
+    # so path-based detail can be attached without duplicate alerts.
     rule_map = {r["rule_id"]: r for r in RULES}
     for event_ids, rule_id in multi_rules:
         rule = rule_map[rule_id]
@@ -1206,7 +1207,11 @@ def _detect_registry_autorun(by_id: dict) -> list[dict]:
 
 
 def _detect_suspicious_service_install(by_id: dict) -> list[dict]:
-    """persist-005 variant: service installed from suspicious path (temp/appdata/users)."""
+    """persist-005: service installed (4697/7045).
+
+    One alert per install event. Detail is upgraded when the binary lives
+    in a user-writable path (temp/appdata/users/...).
+    """
     rule = _rule("persist-005")
     alerts = []
     suspicious_paths = ["\\temp\\", "\\appdata\\", "\\users\\", "\\programdata\\",
@@ -1215,15 +1220,18 @@ def _detect_suspicious_service_install(by_id: dict) -> list[dict]:
         for event in by_id.get(eid, []):
             image_path = event.get("raw", {}).get("ImagePath", "").lower()
             if image_path and any(p in image_path for p in suspicious_paths):
-                alerts.append(_make_alert(
-                    rule=rule,
-                    events=[event],
-                    computer=event["computer"],
-                    user=event["user"],
-                    ip=None,
-                    count=1,
-                    detail=f"Service installed from suspicious path: {image_path[:100]}",
-                ))
+                detail = f"Service installed from suspicious path: {image_path[:100]}"
+            else:
+                detail = _event_detail(event)
+            alerts.append(_make_alert(
+                rule=rule,
+                events=[event],
+                computer=event["computer"],
+                user=event["user"],
+                ip=None,
+                count=1,
+                detail=detail,
+            ))
     return alerts
 
 
