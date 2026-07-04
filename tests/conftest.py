@@ -10,9 +10,22 @@ from pathlib import Path
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _no_api_tokens(monkeypatch):
+    """Blank out API tokens so tests never hit ipinfo.io / AbuseIPDB.
+
+    Tests that exercise the HTTP client pass a token explicitly and mock
+    urllib at the same time.
+    """
+    monkeypatch.setattr("src.enricher._IPINFO_TOKEN", "")
+    monkeypatch.setattr("src.enricher._ABUSEIPDB_TOKEN", "")
+
+
 # ---------------------------------------------------------------------------
 # Event factory helpers
 # ---------------------------------------------------------------------------
+
 
 def make_event(
     event_id: int,
