@@ -67,6 +67,9 @@ _IPINFO_TOKEN = os.environ.get("IPINFO_TOKEN", "")
 _ABUSEIPDB_TOKEN = os.environ.get("ABUSEIPDB_TOKEN", "")
 _VIRUSTOTAL_TOKEN = os.environ.get("VIRUSTOTAL_TOKEN", "")
 _GREYNOISE_TOKEN = os.environ.get("GREYNOISE_TOKEN", "")
+_GREYNOISE_COMMUNITY = (
+    os.environ.get("GREYNOISE_COMMUNITY", "").lower() in ("1", "true", "yes")
+)
 
 
 # ---------------------------------------------------------------------------
@@ -381,17 +384,27 @@ class GreyNoiseEnricher:
       - riot=True   → IP belongs to a common business service (benign)
       - classification: 'benign' | 'malicious' | 'unknown'
 
-    Requires GREYNOISE_TOKEN in .env or environment (free community key).
+    Auth modes (docs.greynoise.io/docs/using-the-greynoise-community-api):
+      - GREYNOISE_TOKEN set        → authenticated, 50 lookups/week (free acct)
+      - GREYNOISE_COMMUNITY=true   → unauthenticated, 10 IP lookups/day
+      - neither                    → enrichment disabled (no IPs are sent
+                                     to a third party without opt-in)
+
     Adds 'greynoise_intel' key to each alert.
     """
 
-    def __init__(self, token: str = "") -> None:
+    def __init__(self, token: str = "",
+                 allow_unauthenticated: bool | None = None) -> None:
         self._token = token or _GREYNOISE_TOKEN
+        if allow_unauthenticated is None:
+            allow_unauthenticated = _GREYNOISE_COMMUNITY
+        self._enabled = bool(self._token) or allow_unauthenticated
         self._cache: dict[str, dict | None] = {}
-        if not self._token:
+        if not self._enabled:
             logger.info(
-                "No GREYNOISE_TOKEN set - GreyNoise enrichment disabled. "
-                "Set GREYNOISE_TOKEN in .env to enable."
+                "GreyNoise enrichment disabled. Set GREYNOISE_TOKEN in .env "
+                "(authenticated, 50/week) or GREYNOISE_COMMUNITY=true "
+                "(unauthenticated, 10 IPs/day) to enable."
             )
 
     def enrich_alerts(self, alerts: list[dict]) -> list[dict]:
@@ -413,7 +426,7 @@ class GreyNoiseEnricher:
             return _no_greynoise_intel()
         if ip in self._cache:
             return self._cache[ip] or _no_greynoise_intel()
-        if not self._token:
+        if not self._enabled:
             self._cache[ip] = None
             return _no_greynoise_intel()
 
@@ -423,13 +436,14 @@ class GreyNoiseEnricher:
 
     def _query(self, ip: str) -> dict | None:
         url = f"{GREYNOISE_BASE_URL}/{ip}"
+        headers = {"Accept": "application/json",
+                   "User-Agent": "windows-event-analyzer/1.0"}
+        if self._token:
+            # unauthenticated community access works without this header,
+            # just with a lower rate limit
+            headers["key"] = self._token
         try:
-            req = urllib.request.Request(
-                url,
-                headers={"key": self._token,
-                         "Accept": "application/json",
-                         "User-Agent": "windows-event-analyzer/1.0"},
-            )
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(
                 req, timeout=GREYNOISE_REQUEST_TIMEOUT
             ) as resp:
