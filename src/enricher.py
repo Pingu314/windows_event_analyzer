@@ -7,6 +7,8 @@ process context, privilege context and IP reputation data.
 Classes:
     IPEnricher              - ipinfo.io geolocation, ASN, Tor detection
     AbuseIPDBEnricher       - AbuseIPDB reputation scoring
+    VirusTotalEnricher      - VirusTotal vendor verdicts for IPs
+    GreyNoiseEnricher       - GreyNoise scanner/noise classification
     UserContextEnricher     - service accounts, machine accounts, watchlist
     ComputerContextEnricher - DC/server/workstation classification, HVA
     ProcessContextEnricher  - LOLBin detection, path anomalies
@@ -35,6 +37,8 @@ from config.settings import (
     ABUSEIPDB_BASE_URL,
     ABUSEIPDB_REQUEST_TIMEOUT,
     DC_NAMING_PREFIXES,
+    GREYNOISE_BASE_URL,
+    GREYNOISE_REQUEST_TIMEOUT,
     HIGH_RISK_COUNTRIES,
     HIGH_RISK_USERNAMES,
     HIGH_VALUE_ASSETS,
@@ -46,6 +50,8 @@ from config.settings import (
     SERVER_NAMING_PREFIXES,
     SERVICE_ACCOUNT_PATTERNS,
     SYSTEM_PROCESS_PATHS,
+    VIRUSTOTAL_BASE_URL,
+    VIRUSTOTAL_REQUEST_TIMEOUT,
     WORKSTATION_NAMING_PREFIXES,
 )
 
@@ -59,6 +65,8 @@ except ImportError:
 
 _IPINFO_TOKEN = os.environ.get("IPINFO_TOKEN", "")
 _ABUSEIPDB_TOKEN = os.environ.get("ABUSEIPDB_TOKEN", "")
+_VIRUSTOTAL_TOKEN = os.environ.get("VIRUSTOTAL_TOKEN", "")
+_GREYNOISE_TOKEN = os.environ.get("GREYNOISE_TOKEN", "")
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +281,187 @@ class AbuseIPDBEnricher:
             return None
         except Exception as e:
             logger.debug("AbuseIPDB unexpected error for %s: %s", ip, e)
+            return None
+
+
+# ---------------------------------------------------------------------------
+# VirusTotalEnricher
+# ---------------------------------------------------------------------------
+
+class VirusTotalEnricher:
+    """Enriches alert IPs with VirusTotal vendor verdicts.
+
+    Requires VIRUSTOTAL_TOKEN in .env or environment.
+    Free tier: 500 lookups/day, 4/minute.
+    Adds 'vt_intel' key to each alert.
+    """
+
+    def __init__(self, token: str = "") -> None:
+        self._token = token or _VIRUSTOTAL_TOKEN
+        self._cache: dict[str, dict | None] = {}
+        if not self._token:
+            logger.info(
+                "No VIRUSTOTAL_TOKEN set - VirusTotal enrichment disabled. "
+                "Set VIRUSTOTAL_TOKEN in .env to enable."
+            )
+
+    def enrich_alerts(self, alerts: list[dict]) -> list[dict]:
+        """Add 'vt_intel' key to each alert."""
+        for alert in alerts:
+            ip = alert.get("ip")
+            alert["vt_intel"] = self.get_verdict(ip) if ip else _no_vt_intel()
+        return alerts
+
+    def get_verdict(self, ip: str) -> dict:
+        """Query VirusTotal for a single IP.
+
+        Returns:
+            Dict with malicious (vendor count), suspicious, harmless,
+            reputation, as_owner, country.
+        """
+        if not ip or _is_private(ip):
+            return _no_vt_intel()
+        if ip in self._cache:
+            return self._cache[ip] or _no_vt_intel()
+        if not self._token:
+            self._cache[ip] = None
+            return _no_vt_intel()
+
+        result = self._query(ip)
+        self._cache[ip] = result
+        return result or _no_vt_intel()
+
+    def _query(self, ip: str) -> dict | None:
+        url = f"{VIRUSTOTAL_BASE_URL}/ip_addresses/{ip}"
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"x-apikey": self._token,
+                         "Accept": "application/json",
+                         "User-Agent": "windows-event-analyzer/1.0"},
+            )
+            with urllib.request.urlopen(
+                req, timeout=VIRUSTOTAL_REQUEST_TIMEOUT
+            ) as resp:
+                attrs = (json.loads(resp.read().decode())
+                         .get("data", {}).get("attributes", {}))
+
+            stats = attrs.get("last_analysis_stats", {})
+            return {
+                "malicious":  stats.get("malicious", 0),
+                "suspicious": stats.get("suspicious", 0),
+                "harmless":   stats.get("harmless", 0),
+                "reputation": attrs.get("reputation"),
+                "as_owner":   attrs.get("as_owner"),
+                "country":    attrs.get("country"),
+            }
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                logger.warning("VirusTotal rate limit hit for %s", ip)
+            else:
+                logger.debug("VirusTotal HTTP error for %s: %s", ip, e)
+            return None
+        except urllib.error.URLError as e:
+            logger.debug("VirusTotal connection error for %s: %s", ip, e)
+            return None
+        except Exception as e:
+            logger.debug("VirusTotal unexpected error for %s: %s", ip, e)
+            return None
+
+
+# ---------------------------------------------------------------------------
+# GreyNoiseEnricher
+# ---------------------------------------------------------------------------
+
+class GreyNoiseEnricher:
+    """Enriches alert IPs with GreyNoise Community classification.
+
+    Tells scanners/background noise apart from targeted attackers:
+      - noise=True  → IP mass-scans the whole internet (opportunistic)
+      - riot=True   → IP belongs to a common business service (benign)
+      - classification: 'benign' | 'malicious' | 'unknown'
+
+    Requires GREYNOISE_TOKEN in .env or environment (free community key).
+    Adds 'greynoise_intel' key to each alert.
+    """
+
+    def __init__(self, token: str = "") -> None:
+        self._token = token or _GREYNOISE_TOKEN
+        self._cache: dict[str, dict | None] = {}
+        if not self._token:
+            logger.info(
+                "No GREYNOISE_TOKEN set - GreyNoise enrichment disabled. "
+                "Set GREYNOISE_TOKEN in .env to enable."
+            )
+
+    def enrich_alerts(self, alerts: list[dict]) -> list[dict]:
+        """Add 'greynoise_intel' key to each alert."""
+        for alert in alerts:
+            ip = alert.get("ip")
+            alert["greynoise_intel"] = (
+                self.get_classification(ip) if ip else _no_greynoise_intel()
+            )
+        return alerts
+
+    def get_classification(self, ip: str) -> dict:
+        """Query GreyNoise Community API for a single IP.
+
+        Returns:
+            Dict with classification, is_noise, is_riot, actor_name, last_seen.
+        """
+        if not ip or _is_private(ip):
+            return _no_greynoise_intel()
+        if ip in self._cache:
+            return self._cache[ip] or _no_greynoise_intel()
+        if not self._token:
+            self._cache[ip] = None
+            return _no_greynoise_intel()
+
+        result = self._query(ip)
+        self._cache[ip] = result
+        return result or _no_greynoise_intel()
+
+    def _query(self, ip: str) -> dict | None:
+        url = f"{GREYNOISE_BASE_URL}/{ip}"
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"key": self._token,
+                         "Accept": "application/json",
+                         "User-Agent": "windows-event-analyzer/1.0"},
+            )
+            with urllib.request.urlopen(
+                req, timeout=GREYNOISE_REQUEST_TIMEOUT
+            ) as resp:
+                data = json.loads(resp.read().decode())
+
+            return {
+                "classification": data.get("classification", "unknown"),
+                "is_noise":       data.get("noise", False),
+                "is_riot":        data.get("riot", False),
+                "actor_name":     data.get("name"),
+                "last_seen":      data.get("last_seen"),
+            }
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                # GreyNoise has never observed this IP - that is a result too
+                return {
+                    "classification": "unknown",
+                    "is_noise":       False,
+                    "is_riot":        False,
+                    "actor_name":     None,
+                    "last_seen":      None,
+                }
+            if e.code == 429:
+                logger.warning("GreyNoise rate limit hit for %s", ip)
+            else:
+                logger.debug("GreyNoise HTTP error for %s: %s", ip, e)
+            return None
+        except urllib.error.URLError as e:
+            logger.debug("GreyNoise connection error for %s: %s", ip, e)
+            return None
+        except Exception as e:
+            logger.debug("GreyNoise unexpected error for %s: %s", ip, e)
             return None
 
 
@@ -563,11 +752,12 @@ class AlertContextEnricher:
     """Orchestrator that runs all enrichers in sequence.
 
     Pipeline:
-        IPEnricher → AbuseIPDBEnricher → UserContextEnricher →
-        ComputerContextEnricher → ProcessContextEnricher → PrivilegeEnricher
+        IPEnricher → AbuseIPDBEnricher → VirusTotalEnricher →
+        GreyNoiseEnricher → UserContextEnricher → ComputerContextEnricher →
+        ProcessContextEnricher → PrivilegeEnricher
 
-    API enrichers (IP, AbuseIPDB) degrade gracefully without tokens.
-    All other enrichers run unconditionally - no API required.
+    API enrichers (IP, AbuseIPDB, VirusTotal, GreyNoise) degrade gracefully
+    without tokens. All other enrichers run unconditionally - no API required.
 
     Usage:
         enricher = AlertContextEnricher()
@@ -578,10 +768,14 @@ class AlertContextEnricher:
         self,
         ip_token: str = "",
         abuse_token: str = "",
+        vt_token: str = "",
+        greynoise_token: str = "",
         user_watchlist: list[str] | None = None,
     ) -> None:
         self._ip = IPEnricher(token=ip_token)
         self._abuse = AbuseIPDBEnricher(token=abuse_token)
+        self._vt = VirusTotalEnricher(token=vt_token)
+        self._greynoise = GreyNoiseEnricher(token=greynoise_token)
         self._user = UserContextEnricher(watchlist=user_watchlist)
         self._computer = ComputerContextEnricher()
         self._process = ProcessContextEnricher()
@@ -598,6 +792,8 @@ class AlertContextEnricher:
         """
         alerts = self._ip.enrich_alerts(alerts)
         alerts = self._abuse.enrich_alerts(alerts)
+        alerts = self._vt.enrich_alerts(alerts)
+        alerts = self._greynoise.enrich_alerts(alerts)
         alerts = self._user.enrich_alerts(alerts)
         alerts = self._computer.enrich_alerts(alerts)
         alerts = self._process.enrich_alerts(alerts)
@@ -629,6 +825,27 @@ def _no_abuse_intel() -> dict:
         "is_whitelisted": None,
         "usage_type":     None,
         "isp":            None,
+    }
+
+
+def _no_vt_intel() -> dict:
+    return {
+        "malicious":  None,
+        "suspicious": None,
+        "harmless":   None,
+        "reputation": None,
+        "as_owner":   None,
+        "country":    None,
+    }
+
+
+def _no_greynoise_intel() -> dict:
+    return {
+        "classification": None,
+        "is_noise":       False,
+        "is_riot":        False,
+        "actor_name":     None,
+        "last_seen":      None,
     }
 
 

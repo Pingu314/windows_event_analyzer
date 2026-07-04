@@ -472,6 +472,10 @@ HIGH_VALUE_ASSETS: list[str] = []
 HIGH_RISK_COUNTRIES = ["CN", "RU", "KP", "IR", "NG", "UA", "RO", "BR"]
 ABUSEIPDB_BASE_URL = "https://api.abuseipdb.com/api/v2"
 ABUSEIPDB_REQUEST_TIMEOUT = 5
+VIRUSTOTAL_BASE_URL = "https://www.virustotal.com/api/v3"
+VIRUSTOTAL_REQUEST_TIMEOUT = 5
+GREYNOISE_BASE_URL = "https://api.greynoise.io/v3/community"
+GREYNOISE_REQUEST_TIMEOUT = 5
 
 # ---------------------------------------------------------------------------
 # Process enrichment
