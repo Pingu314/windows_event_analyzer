@@ -89,7 +89,7 @@ def parse_many(paths: list[str | Path]) -> list[dict]:
     """Parse multiple log files and merge into a single sorted event stream.
 
     Args:
-        paths: List of .evtx or .csv file paths.
+        paths: List of .evtx, .csv or .json file paths.
 
     Returns:
         Merged, timestamp-sorted list of normalised event dicts.
@@ -157,6 +157,8 @@ def _parse_evtx_record_xml(xml_str: str) -> dict | None:
         timestamp_str = (time_created.get("SystemTime", "")
                          if time_created is not None else "")
         timestamp = _parse_timestamp_evtx(timestamp_str)
+        if timestamp is None:
+            return None
 
         provider = system.find("e:Provider", ns)
         source = (provider.get("Name", "") if provider is not None else "")
@@ -278,6 +280,8 @@ def _parse_csv_row(row: dict, col_map: dict[str, str]) -> dict | None:
         return None
 
     timestamp = _parse_timestamp_csv(get("timestamp"))
+    if timestamp is None:
+        return None
 
     logon_type_str = get("logon_type")
     logon_type = None
@@ -365,6 +369,8 @@ def _parse_jsonl_record(obj: dict) -> dict | None:
     # Timestamp
     ts_str = _get(*JSON_FIELD_ALIASES["timestamp"]) or ""
     timestamp = _parse_timestamp_jsonl(ts_str)
+    if timestamp is None:
+        return None
     user = _get(*JSON_FIELD_ALIASES["user"])
     ip = _get(*JSON_FIELD_ALIASES["ip_address"])
     logon_type_raw = _get(*JSON_FIELD_ALIASES["logon_type"])
@@ -395,10 +401,15 @@ def _parse_jsonl_record(obj: dict) -> dict | None:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _parse_timestamp_evtx(ts: str) -> datetime:
-    """Parse EVTX SystemTime string to UTC-aware datetime."""
+def _parse_timestamp_evtx(ts: str) -> datetime | None:
+    """Parse EVTX SystemTime string to UTC-aware datetime.
+
+    Returns None when the timestamp is missing or unparseable - the record
+    is then skipped. Substituting the current time would inject events into
+    "now" and could fabricate clusters in window-based detection rules.
+    """
     if not ts:
-        return datetime.now(timezone.utc)
+        return None
     ts = ts.rstrip("Z").split(".")[0]
     try:
         return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
@@ -407,17 +418,23 @@ def _parse_timestamp_evtx(ts: str) -> datetime:
             return datetime.fromisoformat(ts).replace(tzinfo=timezone.utc)
         except ValueError:
             logger.debug("Could not parse EVTX timestamp: %s", ts)
-            return datetime.now(timezone.utc)
+            return None
 
 
-def _parse_timestamp_csv(ts: str) -> datetime:
+def _parse_timestamp_csv(ts: str) -> datetime | None:
     """Parse CSV timestamp string to UTC-aware datetime.
 
     Handles common Windows Event Viewer export formats including
     US English, EU, ISO 8601 and German locale variants.
+
+    Known limitation: US (%m/%d/%Y) is tried before EU (%d/%m/%Y), so an
+    ambiguous date like 01/02/2024 is read as January 2nd.
+
+    Returns None when the timestamp is missing or unparseable - the row
+    is then skipped rather than being stamped with the current time.
     """
     if not ts:
-        return datetime.now(timezone.utc)
+        return None
 
     formats = [
         "%m/%d/%Y %I:%M:%S %p",    # 01/15/2024 10:30:00 AM  (US)
@@ -434,13 +451,17 @@ def _parse_timestamp_csv(ts: str) -> datetime:
             continue
 
     logger.debug("Could not parse CSV timestamp: %s", ts)
-    return datetime.now(timezone.utc)
+    return None
 
 
-def _parse_timestamp_jsonl(ts: str) -> datetime:
-    """Parse JSON event timestamp formats (ISO 8601 and datetime variants)."""
+def _parse_timestamp_jsonl(ts: str) -> datetime | None:
+    """Parse JSON event timestamp formats (ISO 8601 and datetime variants).
+
+    Returns None when the timestamp is missing or unparseable - the record
+    is then skipped rather than being stamped with the current time.
+    """
     if not ts:
-        return datetime.now(timezone.utc)
+        return None
     # Remove trailing Z and microseconds for simpler parsing
     ts = ts.rstrip("Z").split(".")[0].strip()
     formats = [
@@ -453,7 +474,7 @@ def _parse_timestamp_jsonl(ts: str) -> datetime:
         except ValueError:
             continue
     logger.debug("Could not parse JSONL timestamp: %s", ts)
-    return datetime.now(timezone.utc)
+    return None
 
 
 def _clean_user(user: str | None) -> str | None:

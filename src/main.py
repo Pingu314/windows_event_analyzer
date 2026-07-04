@@ -136,7 +136,7 @@ def run_pipeline_multi(
 
 
 def collect_log_files(path: str | Path) -> list[Path]:
-    """Collect .evtx and .csv files from a file path or directory."""
+    """Collect supported log files (.evtx/.csv/.json) from a file or directory."""
     p = Path(path)
     if p.is_file():
         if p.suffix.lower() in SUPPORTED_EXTENSIONS:
@@ -155,7 +155,7 @@ def collect_log_files(path: str | Path) -> list[Path]:
 
 
 def collect_log_files_recursive(path: str | Path) -> list[Path]:
-    """Recursively collect .evtx and .csv files from a directory tree."""
+    """Recursively collect supported log files (.evtx/.csv/.json) from a tree."""
     p = Path(path)
     if p.is_file():
         return collect_log_files(p)

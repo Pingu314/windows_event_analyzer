@@ -156,10 +156,10 @@ RULES: list[dict] = [
      "category": "Account Management", "mitre": "T1003.002",
      "sigma_severity": "critical", "event_ids": [4794]},
     {"rule_id": "group-001", "rule": "Member Added to Privileged Group",
-     "category": "Account Management", "mitre": "T1098.001",
+     "category": "Account Management", "mitre": "T1098.007",
      "sigma_severity": "high", "event_ids": [4732, 4728, 4756]},
     {"rule_id": "group-002", "rule": "Member Removed from Privileged Group",
-     "category": "Account Management", "mitre": "T1098.001",
+     "category": "Account Management", "mitre": "T1098.007",
      "sigma_severity": "medium", "event_ids": [4733, 4729, 4757]},
     {"rule_id": "group-003", "rule": "Security Group Changed",
      "category": "Account Management", "mitre": "T1098",
@@ -433,7 +433,6 @@ def run_all_detections(
 
     alerts += _detect_brute_force(by_id, **kwargs)
     alerts += _detect_password_spray(by_id, **kwargs)
-    alerts += _detect_explicit_credential(by_id)
     alerts += _detect_off_hours_logon(by_id)
     alerts += _detect_rdp_logon(by_id)
     alerts += _detect_rdp_reconnect_anomaly(by_id)
@@ -529,10 +528,11 @@ _SINGLE_EVENT_RULE_MAP: dict[int, str] = {
     5141:  "ad-003",
     5139:  "ad-004",
     5138:  "ad-005",
-    4778:  "logon-005",
     4779:  "logon-006",
-    4740:  "lockout-001",
 }
+# 4740 (lockout-001) and 4778 (logon-005) are intentionally absent:
+# they are handled by _detect_account_lockout and
+# _detect_rdp_reconnect_anomaly to avoid duplicate alerts.
 
 
 def _detect_single_event_rules(by_id: dict[int, list[dict]]) -> list[dict]:
@@ -649,15 +649,13 @@ def _detect_password_spray(by_id: dict, spray_threshold: int,
     return alerts
 
 
-def _detect_explicit_credential(by_id: dict) -> list[dict]:
-    """logon-003: 4648 explicit credential use."""
-    return _detect_single_event_rules(
-        {4648: by_id.get(4648, [])}
-    )
-
-
 def _detect_off_hours_logon(by_id: dict) -> list[dict]:
-    """logon-004: successful logon outside business hours."""
+    """logon-004: successful logon outside business hours.
+
+    Business hours (settings.BUSINESS_HOURS_*) are compared against the
+    event timestamp, which parsers normalise to UTC. Adjust the constants
+    to your organisation's UTC offset.
+    """
     rule = _rule("logon-004")
     alerts = []
     for event in by_id.get(4624, []):
@@ -1105,8 +1103,7 @@ def _detect_service_account_interactive(by_id: dict) -> list[dict]:
         user = (event.get("user") or "").lower()
         if not user:
             continue
-        if any(user.startswith(p) or user.endswith(p.rstrip("_").rstrip("-"))
-               for p in SERVICE_ACCOUNT_PATTERNS):
+        if _matches_service_pattern(user):
             alerts.append(_make_alert(
                 rule=rule,
                 events=[event],
@@ -1310,19 +1307,29 @@ def _detect_lateral_explicit_network(by_id: dict) -> list[dict]:
 
 
 def _detect_ntlm_relay(by_id: dict) -> list[dict]:
-    """lateral-010: 4624 type 3 with NTLM auth where IP doesn't match computer name."""
+    """lateral-010: NTLM relay-to-self indicator.
+
+    4624 type 3 with NTLM auth where the client's claimed WorkstationName
+    equals the target computer, yet the connection arrives over the network
+    from a real source IP. A machine authenticating to itself over the wire
+    is the classic ntlmrelayx / PetitPotam relay-to-self pattern.
+    Plain remote NTLM logons (workstation != target) are normal and ignored.
+    """
     rule = _rule("lateral-010")
     alerts = []
     for event in by_id.get(4624, []):
         if event.get("logon_type") != 3:
             continue
-        auth_pkg = event.get("raw", {}).get("AuthenticationPackageName", "").upper()
+        raw = event.get("raw", {})
+        auth_pkg = raw.get("AuthenticationPackageName", "").upper()
         if "NTLM" not in auth_pkg:
             continue
         ip = event.get("ip_address", "")
+        if not ip or not _is_ip(ip) or ip.startswith("127."):
+            continue
         computer = event.get("computer", "").lower().split(".")[0]
-        # Flag if source IP is present and doesn't resolve to the computer name
-        if ip and _is_ip(ip) and not ip.startswith("127."):
+        workstation = raw.get("WorkstationName", "").lower().split(".")[0]
+        if workstation and computer and workstation == computer:
             alerts.append(_make_alert(
                 rule=rule,
                 events=[event],
@@ -1330,8 +1337,8 @@ def _detect_ntlm_relay(by_id: dict) -> list[dict]:
                 user=event["user"],
                 ip=ip,
                 count=1,
-                detail=f"NTLM network logon from {ip} to {computer} "
-                       f"— possible relay",
+                detail=f"NTLM network logon to {computer} claiming its own "
+                       f"workstation name, from {ip} — relay-to-self indicator",
             ))
     return alerts
 
@@ -1494,7 +1501,11 @@ def _make_alert(rule: dict, events: list[dict], computer: str,
 
 def _sliding_window_clusters(events: list[dict], window: timedelta,
                              threshold: int) -> list[list[dict]]:
-    """Find all clusters of ≥threshold events within a sliding time window."""
+    """Find non-overlapping clusters of ≥threshold events within a time window.
+
+    After a cluster is emitted, scanning resumes past its last event so a
+    single burst produces exactly one alert instead of one per start offset.
+    """
     clusters = []
     n = len(events)
     i = 0
@@ -1504,7 +1515,9 @@ def _sliding_window_clusters(events: list[dict], window: timedelta,
             j += 1
         if j - i >= threshold:
             clusters.append(events[i:j])
-        i += 1
+            i = j
+        else:
+            i += 1
     return clusters
 
 
@@ -1547,6 +1560,19 @@ def _extract_field(event: dict, field: str) -> str | None:
 def _is_ip(value: str) -> bool:
     """Basic check if value looks like an IP address."""
     return bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}$", value or ""))
+
+
+def _matches_service_pattern(user: str) -> bool:
+    """Check username against service account naming patterns.
+
+    Prefix patterns (e.g. 'svc_') match at the start; suffix matching is
+    only done with the separator included ('backup_svc' matches '_svc',
+    but 'lisa' does not match 'sa-').
+    """
+    return any(
+        user.startswith(p) or (p.startswith(("_", "-")) and user.endswith(p))
+        for p in SERVICE_ACCOUNT_PATTERNS
+    )
 
 
 def _log_audit_caveats(events: list[dict]) -> None:

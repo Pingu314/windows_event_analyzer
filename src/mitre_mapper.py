@@ -31,7 +31,7 @@ _TECHNIQUE_NAMES: dict[str, str] = {
     "T1078.003": "T1078.003 - Local Accounts",
     "T1087.002": "T1087.002 - Domain Account Discovery",
     "T1098":     "T1098 - Account Manipulation",
-    "T1098.001": "T1098.001 - Additional Cloud Credentials",
+    "T1098.007": "T1098.007 - Additional Local or Domain Groups",
     "T1105":     "T1105 - Ingress Tool Transfer",
     "T1110.001": "T1110.001 - Password Guessing",
     "T1110.003": "T1110.003 - Password Spraying",
@@ -96,7 +96,6 @@ def map_to_mitre(alert: dict) -> list[str]:
         add(primary)
 
     rule_id = alert.get("rule_id", "")
-    sigma_severity = alert.get("sigma_severity", "")
     detail = (alert.get("detail") or "").lower()
     event_ids = set(alert.get("event_ids", []))
 
@@ -206,18 +205,6 @@ def map_to_mitre(alert: dict) -> list[str]:
     if rule_id == "recon-003":
         add("T1078")                    # enumeration precedes valid account use
 
-    if rule_id in ("acct-010",):        # DSRM = default admin account backdoor
-        add("T1078.001")
-    if rule_id == "lockout-001":
-        # high-risk usernames like 'administrator', 'guest' = default account attack
-        add("T1078.001")
-
-    # Severity-based additions
-    if sigma_severity == "critical":
-        # All critical alerts potentially involve valid account abuse
-        if "T1078" not in primary:
-            add("T1078")
-
     # Detail-based contextual mapping
     if "kerberos" in detail or "ticket" in detail:
         add("T1558")
@@ -275,7 +262,7 @@ def map_to_mitre(alert: dict) -> list[str]:
     if {4698, 4702} & event_ids:
         add("T1053.005")
     if {4732, 4728, 4756} & event_ids:
-        add("T1098.001")
+        add("T1098.007")
 
     return tags
 

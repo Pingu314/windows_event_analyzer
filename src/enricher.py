@@ -135,11 +135,14 @@ class IPEnricher:
         return result or _no_intel()
 
     def _query(self, ip: str) -> dict | None:
-        url = f"{IPINFO_BASE_URL}/{ip}/json?token={self._token}"
+        # Token goes in the Authorization header, not the URL, so it cannot
+        # leak into proxy or server access logs.
+        url = f"{IPINFO_BASE_URL}/{ip}/json"
         try:
             req = urllib.request.Request(
                 url,
                 headers={"Accept": "application/json",
+                         "Authorization": f"Bearer {self._token}",
                          "User-Agent": "windows-event-analyzer/1.0"},
             )
             with urllib.request.urlopen(req, timeout=IPINFO_REQUEST_TIMEOUT) as resp:
@@ -318,8 +321,11 @@ class UserContextEnricher:
         u = username.lower().strip()
 
         is_machine = u.endswith(MACHINE_ACCOUNT_SUFFIX)
+        # Prefix patterns match at the start; suffix matching only with the
+        # separator included ('backup_svc' matches '_svc', 'lisa' does not
+        # match 'sa-').
         is_service = any(
-            u.startswith(p) or u.endswith(p.rstrip("_").rstrip("-"))
+            u.startswith(p) or (p.startswith(("_", "-")) and u.endswith(p))
             for p in SERVICE_ACCOUNT_PATTERNS
         )
         is_high_risk = u in HIGH_RISK_USERNAMES

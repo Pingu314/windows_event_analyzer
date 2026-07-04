@@ -37,7 +37,8 @@ LATERAL_WINDOW_MINUTES = 15
 # Short-lived process: created and exited within this window
 SHORT_PROCESS_SECONDS = 10
 
-# Off-hours logon window (24h, local time)
+# Off-hours logon window (24h). Compared against event timestamps, which
+# parsers normalise to UTC - adjust these to your organisation's UTC offset.
 BUSINESS_HOURS_START = 7           # 07:00
 BUSINESS_HOURS_END = 19            # 19:00
 BUSINESS_DAYS = [0, 1, 2, 3, 4]   # Monday–Friday (0=Monday)
