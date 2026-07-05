@@ -451,7 +451,6 @@ IPINFO_REQUEST_TIMEOUT = 5  # seconds
 # ---------------------------------------------------------------------------
 
 SUPPORTED_LOG_EXTENSIONS = {".evtx", ".csv", ".json"}
-DEFAULT_REPORT_DIR = Path("reports")
 DEFAULT_OUTPUT_DIR = Path("output")
 REPORT_CSV_FIELDNAMES = [
     "rule_id", "rule", "category", "mitre", "sigma_severity",

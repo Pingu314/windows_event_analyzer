@@ -19,13 +19,13 @@ env/
 # Generated output (reports, not source)
 output/
 !output/.gitkeep
-reports/
-!reports/.gitkeep
 
 # Log samples - only curated samples are tracked
 data/sample_logs/*.evtx
 data/sample_logs/*.json
 data/sample_logs/*.jsonl
+data/sample_logs/*.csv
+!data/sample_logs/security.csv
 !data/sample_logs/sample_*.json
 
 # Secrets - never commit

@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import APP_VERSION as _APP_VERSION
-from config.settings import DEFAULT_REPORT_DIR as _REPORT_DIR
+from config.settings import DEFAULT_OUTPUT_DIR
 from config.settings import HIGH_RISK_COUNTRIES as _HIGH_RISK_COUNTRIES
 from config.settings import REPORT_CSV_FIELDNAMES as _CSV_FIELDNAMES
 from src.correlator import serialise_incident
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class ReportGenerator:
     """Generates JSON and CSV reports from enriched alert lists."""
 
-    def __init__(self, report_dir: str | Path = _REPORT_DIR) -> None:
+    def __init__(self, report_dir: str | Path = DEFAULT_OUTPUT_DIR) -> None:
         self._dir = Path(report_dir)
         self._ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 

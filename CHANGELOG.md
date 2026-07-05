@@ -5,6 +5,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/).
 ---
 
+## [1.0.1] - 2026-07-05
+
+### Changed
+- Consolidated report output into a single `output/` directory. The unused
+  `reports/` default (only reachable when constructing `ReportGenerator()`
+  without arguments) has been removed; the default now points at `output/`,
+  matching the CLI's `--output` default.
+
+### Removed
+- `DEFAULT_REPORT_DIR` from `config/settings.py` and the `reports/` directory.
+
+---
+
 ## [1.0.0] - 2026-07-05
 
 ### Added
