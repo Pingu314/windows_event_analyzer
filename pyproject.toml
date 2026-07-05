@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "windows-event-analyzer"
-version = "0.10.1"
+version = "1.0.0"
 description = "Windows Security event log detection and triage with MITRE ATT&CK mapping"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 keywords = ["security", "soc", "windows", "evtx", "threat-detection", "mitre-attack", "sigma"]
-classifiers = ["Development Status :: 4 - Beta",
+classifiers = ["Development Status :: 5 - Production/Stable",
                "Intended Audience :: Information Technology",
                "Topic :: Security",
                "Programming Language :: Python :: 3",

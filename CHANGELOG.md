@@ -5,6 +5,38 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/).
 ---
 
+## [1.0.0] - 2026-07-05
+
+### Added
+- **Incident correlation** (`src/correlator.py`): alerts sharing an actor
+  entity (source IP, user) within a time window are grouped into scored
+  incidents - console incident list, JSON `incidents` section and
+  `GET /incidents` dashboard endpoint.
+- **Sysmon / Defender / System channel rules** (13 new rules, total 107):
+  LSASS access, remote thread injection, process tampering, startup-folder
+  drops, suspicious-TLD DNS, C2-port connections, registry autorun (Sysmon);
+  malware detected, real-time protection disabled, config tampering
+  (Defender); security service disabled/crashed (System). All channel-gated
+  to prevent event-ID collisions.
+- **Sigma YAML rule loading** (`src/sigma_loader.py`, pyyaml dependency):
+  runtime loading of "EventID + field filter" Sigma rules; three starter
+  rules bundled in `rules/sigma/`; `--sigma-rules DIR` / `--no-sigma` flags;
+  Sigma alerts scored by rule level.
+- **Live capture**: `--live [--live-channel X --live-max N]` reads the local
+  event log via wevtutil (Windows, elevated shell) - no export step.
+- **Self-contained HTML report** (`--html`): severity tiles, category bars,
+  incident cards with timeline, ranked alert table; light/dark, no external
+  resources, all content HTML-escaped.
+- `--min-severity LEVEL` CLI filter.
+- Alert allowlist (`ALLOWLIST_IPS/USERS/COMPUTERS` in settings) with logged,
+  auditable suppressions.
+- Normalised event schema gained a `channel` field (all three parsers).
+- GreyNoise keyless community mode: `GREYNOISE_COMMUNITY=true` enables
+  unauthenticated lookups (10 IPs/day) per the official Community API docs;
+  token remains optional for 50/week.
+
+---
+
 ## [0.10.1] - 2026-07-04
 
 ### Fixed
